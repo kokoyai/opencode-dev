@@ -32,7 +32,7 @@ import * as CrossSpawnSpawner from "@/effect/cross-spawn-spawner"
 
 export namespace MCP {
   const log = Log.create({ service: "mcp" })
-  const DEFAULT_TIMEOUT = 30_000
+  const DEFAULT_TIMEOUT = 60 * 60 * 1000
 
   export const Resource = z
     .object({

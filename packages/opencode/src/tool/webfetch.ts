@@ -5,8 +5,8 @@ import DESCRIPTION from "./webfetch.txt"
 import { abortAfterAny } from "../util/abort"
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
-const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
-const MAX_TIMEOUT = 120 * 1000 // 2 minutes
+const DEFAULT_TIMEOUT = 60 * 60 * 1000 // 1 hour
+const MAX_TIMEOUT = 60 * 60 * 1000 // 1 hour
 
 export const WebFetchTool = Tool.define("webfetch", {
   description: DESCRIPTION,
