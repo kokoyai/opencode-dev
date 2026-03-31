@@ -7,6 +7,8 @@ import { fileURLToPath } from "url"
 const dir = fileURLToPath(new URL("..", import.meta.url))
 process.chdir(dir)
 
+const binaryName = "mwopencode"
+
 const binaries: Record<string, string> = {}
 for (const filepath of new Bun.Glob("*/package.json").scanSync({ cwd: "./dist" })) {
   const pkg = await Bun.file(`./dist/${filepath}`).json()
@@ -15,23 +17,30 @@ for (const filepath of new Bun.Glob("*/package.json").scanSync({ cwd: "./dist" }
 console.log("binaries", binaries)
 const version = Object.values(binaries)[0]
 
-await $`mkdir -p ./dist/${pkg.name}`
-await $`cp -r ./bin ./dist/${pkg.name}/bin`
-await $`cp ./script/postinstall.mjs ./dist/${pkg.name}/postinstall.mjs`
-await Bun.file(`./dist/${pkg.name}/LICENSE`).write(await Bun.file("../../LICENSE").text())
+await $`mkdir -p ./dist/${binaryName}`
+await $`cp -r ./bin ./dist/${binaryName}/bin`
+await $`cp ./script/postinstall.mjs ./dist/${binaryName}/postinstall.mjs`
+await Bun.file(`./dist/${binaryName}/LICENSE`).write(await Bun.file("../../LICENSE").text())
 
-await Bun.file(`./dist/${pkg.name}/package.json`).write(
+await Bun.file(`./dist/${binaryName}/package.json`).write(
   JSON.stringify(
     {
-      name: pkg.name + "-ai",
+      name: binaryName,
+      description: "AI-powered development tool",
+      author: "mwopencode",
       bin: {
-        [pkg.name]: `./bin/${pkg.name}`,
+        mwopencode: `./bin/opencode`,
       },
       scripts: {
         postinstall: "bun ./postinstall.mjs || node ./postinstall.mjs",
       },
       version: version,
       license: pkg.license,
+      repository: {
+        type: "git",
+        url: "https://github.com/kokoyai/opencode-dev"
+      },
+      keywords: ["ai", "coding", "assistant", "cli", "terminal"],
       optionalDependencies: binaries,
     },
     null,
@@ -47,7 +56,7 @@ const tasks = Object.entries(binaries).map(async ([name]) => {
   await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(`./dist/${name}`)
 })
 await Promise.all(tasks)
-await $`cd ./dist/${pkg.name} && bun pm pack && npm publish *.tgz --access public --tag ${Script.channel}`
+await $`cd ./dist/${binaryName} && bun pm pack && npm publish *.tgz --access public --tag ${Script.channel}`
 
 const image = "ghcr.io/anomalyco/opencode"
 const platforms = "linux/amd64,linux/arm64"
@@ -58,10 +67,10 @@ await $`docker buildx build --platform ${platforms} ${tagFlags} --push .`
 // registries
 if (!Script.preview) {
   // Calculate SHA values
-  const arm64Sha = await $`sha256sum ./dist/opencode-linux-arm64.tar.gz | cut -d' ' -f1`.text().then((x) => x.trim())
-  const x64Sha = await $`sha256sum ./dist/opencode-linux-x64.tar.gz | cut -d' ' -f1`.text().then((x) => x.trim())
-  const macX64Sha = await $`sha256sum ./dist/opencode-darwin-x64.zip | cut -d' ' -f1`.text().then((x) => x.trim())
-  const macArm64Sha = await $`sha256sum ./dist/opencode-darwin-arm64.zip | cut -d' ' -f1`.text().then((x) => x.trim())
+  const arm64Sha = await $`sha256sum ./dist/mwopencode-linux-arm64.tar.gz | cut -d' ' -f1`.text().then((x) => x.trim())
+  const x64Sha = await $`sha256sum ./dist/mwopencode-linux-x64.tar.gz | cut -d' ' -f1`.text().then((x) => x.trim())
+  const macX64Sha = await $`sha256sum ./dist/mwopencode-darwin-x64.zip | cut -d' ' -f1`.text().then((x) => x.trim())
+  const macArm64Sha = await $`sha256sum ./dist/mwopencode-darwin-arm64.zip | cut -d' ' -f1`.text().then((x) => x.trim())
 
   const [pkgver, _subver = ""] = Script.version.split(/(-.*)/, 2)
 
