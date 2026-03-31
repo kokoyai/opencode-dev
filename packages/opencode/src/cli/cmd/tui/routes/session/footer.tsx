@@ -21,28 +21,17 @@ export function Footer() {
   const connected = useConnected()
 
   const [store, setStore] = createStore({
-    welcome: false,
+    welcome: true,
   })
 
   onMount(() => {
     // Track all timeouts to ensure proper cleanup
     const timeouts: ReturnType<typeof setTimeout>[] = []
 
-    function tick() {
-      if (connected()) return
-      if (!store.welcome) {
-        setStore("welcome", true)
-        timeouts.push(setTimeout(() => tick(), 5000))
-        return
-      }
-
-      if (store.welcome) {
-        setStore("welcome", false)
-        timeouts.push(setTimeout(() => tick(), 10_000))
-        return
-      }
-    }
-    timeouts.push(setTimeout(() => tick(), 10_000))
+    // Show welcome message for 5 seconds on startup
+    timeouts.push(setTimeout(() => {
+      setStore("welcome", false)
+    }, 5000))
 
     onCleanup(() => {
       timeouts.forEach(clearTimeout)
