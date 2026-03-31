@@ -1342,6 +1342,63 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           throw new Error("Impossible")
         })
 
+      const isVerificationCommand = (cmd: string): boolean => {
+        const normalized = cmd.trim().toLowerCase()
+        // Test commands
+        const testPatterns = [
+          /\bnpm\s+(test|run\s+test[:\s])/,
+          /\byarn\s+test/,
+          /\bpnpm\s+test/,
+          /\bbun\s+(test|test:)/,
+          /\bpytest\b/,
+          /\bpython\s+(-m\s+)?pytest/,
+          /\bgo\s+test\b/,
+          /\bcargo\s+test\b/,
+          /\bmvn\s+test\b/,
+          /\bgradle\s+test\b/,
+          /\bmake\s+test\b/,
+          /\bjest\b/,
+          /\bvitest\b/,
+          /\bmocha\b/,
+          /\brspec\b/,
+          /\bbundle\s+exec\s+r(a)?spec\b/,
+          /\bcargo\s+clippy\b/,
+        ]
+        // Build commands
+        const buildPatterns = [
+          /\bnpm\s+(run\s+)?build\b/,
+          /\byarn\s+build\b/,
+          /\bpnpm\s+build\b/,
+          /\bbun\s+(run\s+)?build\b/,
+          /\bcargo\s+build\b/,
+          /\bgo\s+build\b/,
+          /\bmvn\s+(compile|package|install)\b/,
+          /\bgradle\s+(build|compile)\b/,
+          /\bmake\b/,
+          /\btsc\b/,
+          /\bwebpack\b/,
+          /\bvite\s+build\b/,
+          /\brollup\b/,
+          /\besbuild\b/,
+          /\bsbt\s+compile\b/,
+        ]
+        // Lint/typecheck commands
+        const lintPatterns = [
+          /\bnpm\s+run\s+(lint|typecheck|type-check)\b/,
+          /\byarn\s+(lint|typecheck|type-check)\b/,
+          /\bpnpm\s+(lint|typecheck|type-check)\b/,
+          /\bbun\s+(lint|typecheck|type-check)\b/,
+          /\beslint\b/,
+          /\bprettier\s+--check\b/,
+          /\bruff\b/,
+          /\bblack\s+--check\b/,
+          /\bmypy\b/,
+          /\bpylint\b/,
+        ]
+        const allPatterns = [...testPatterns, ...buildPatterns, ...lintPatterns]
+        return allPatterns.some((pattern) => pattern.test(normalized))
+      }
+
       const hasRecentVerification = Effect.fnUntraced(function* (sessionID: SessionID, afterUserID: MessageID) {
         const msgs = yield* Effect.promise(() => MessageV2.filterCompacted(MessageV2.stream(sessionID)))
         for (const msg of msgs) {
@@ -1351,8 +1408,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             if (part.state.status !== "completed") continue
             if (part.tool === "bash") {
               const cmd = (part.state.input as any)?.command ?? ""
-              const output = (part.state.output as string) ?? ""
-              if (cmd.trim() && output.trim()) return true
+              const metadata = part.state.metadata as { exit?: number } | undefined
+              const exitCode = metadata?.exit
+              // Must be a verification command AND exit with code 0
+              if (isVerificationCommand(cmd) && exitCode === 0) return true
             }
           }
         }
@@ -1422,15 +1481,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   continue
                 }
 
-                if (mustUseSubagent && step <= 2 && !usedSubagent) {
-                  log.info("blocking exit: no subagent used", { sessionID })
+                // For non-trivial tasks (step > 1), subagent usage is mandatory
+                // Trivial tasks (step == 1, single-turn completion) don't require subagents
+                if (mustUseSubagent && step > 1 && !usedSubagent) {
+                  log.info("blocking exit: non-trivial task completed without subagent", { sessionID, step })
                   yield* sessions.updatePart({
                     id: PartID.ascending(),
                     messageID: lastUser.id,
                     sessionID,
                     type: "text",
                     synthetic: true,
-                    text: "<system-reminder>You must call at least one subagent before finalizing. Use explore for discovery or general for design.</system-reminder>",
+                    text: "<system-reminder>This is a non-trivial task that requires at least one subagent call before finalizing. Use explore for discovery or general for design.</system-reminder>",
                   })
                   continue
                 }
