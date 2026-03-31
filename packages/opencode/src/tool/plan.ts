@@ -1,7 +1,6 @@
 import z from "zod"
 import path from "path"
 import { Tool } from "./tool"
-import { Question } from "../question"
 import { Session } from "../session"
 import { MessageV2 } from "../session/message-v2"
 import { Provider } from "../provider/provider"
@@ -22,25 +21,9 @@ export const PlanExitTool = Tool.define("plan_exit", {
   async execute(_params, ctx) {
     const session = await Session.get(ctx.sessionID)
     const plan = path.relative(Instance.worktree, Session.plan(session))
-    const answers = await Question.ask({
-      sessionID: ctx.sessionID,
-      questions: [
-        {
-          question: `Plan at ${plan} is complete. Would you like to switch to the build agent and start implementing?`,
-          header: "Build Agent",
-          custom: false,
-          options: [
-            { label: "Yes", description: "Switch to build agent and start implementing the plan" },
-            { label: "No", description: "Stay with plan agent to continue refining the plan" },
-          ],
-        },
-      ],
-      tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,
-    })
-
-    const answer = answers[0]?.[0]
-    if (answer === "No") throw new Question.RejectedError()
-
+    
+    // Directly switch to build agent without asking for confirmation
+    // The plan phase should have already gathered all necessary information
     const model = await getLastModel(ctx.sessionID)
 
     const userMsg: MessageV2.User = {
@@ -59,13 +42,13 @@ export const PlanExitTool = Tool.define("plan_exit", {
       messageID: userMsg.id,
       sessionID: ctx.sessionID,
       type: "text",
-      text: `The plan at ${plan} has been approved, you can now edit files. Execute the plan`,
+      text: `The plan at ${plan} is complete. You can now edit files. Execute the plan.`,
       synthetic: true,
     } satisfies MessageV2.TextPart)
 
     return {
       title: "Switching to build agent",
-      output: "User approved switching to build agent. Wait for further instructions.",
+      output: `Plan approved. Switching to build agent to execute the plan at ${plan}. Proceed with implementation.`,
       metadata: {},
     }
   },

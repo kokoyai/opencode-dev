@@ -1,13 +1,17 @@
 Use this tool when you have completed the planning phase and are ready to exit plan agent.
 
-This tool will ask the user if they want to switch to build agent to start implementing the plan.
+**IMPORTANT: This tool will IMMEDIATELY switch to the build agent WITHOUT asking for confirmation.**
+
+The build agent is FORBIDDEN from asking questions - it can only execute the plan.
+Make sure you have asked ALL clarifying questions BEFORE calling this tool.
 
 Call this tool:
 - After you have written a complete plan to the plan file
-- After you have clarified any questions with the user
-- When you are confident the plan is ready for implementation
+- After you have asked ALL clarifying questions and received answers
+- When you are confident the plan has all necessary details for implementation
 
 Do NOT call this tool:
 - Before you have created or finalized the plan
 - If you still have unanswered questions about the implementation
+- If you need any clarification from the user (ask using the question tool first!)
 - If the user has indicated they want to continue planning

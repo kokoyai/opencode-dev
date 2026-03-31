@@ -329,6 +329,8 @@ You should build your plan incrementally by writing to or editing this file. NOT
 ### Phase 1: Initial Understanding
 Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions. Critical: In this phase you should only use the explore subagent type.
 
+**CRITICAL: You must ask ALL clarifying questions during this planning phase. Once you exit plan mode and switch to the build agent, you will NOT be able to ask any more questions. The build agent is strictly forbidden from using the question tool. Make sure you have gathered ALL necessary information before calling plan_exit.**
+
 1. Focus on understanding the user's request and the code associated with their request
 
 2. **Launch up to 3 explore agents IN PARALLEL** (single message, multiple tool calls) to efficiently explore the codebase.
@@ -337,7 +339,7 @@ Goal: Gain a comprehensive understanding of the user's request by reading throug
    - Quality over quantity - 3 agents maximum, but you should try to use the minimum number of agents necessary (usually just 1)
    - If using multiple agents: Provide each agent with a specific search focus or area to explore. Example: One agent searches for existing implementations, another explores related components, a third investigates testing patterns
 
-3. After exploring the code, use the question tool to clarify ambiguities in the user request up front.
+3. After exploring the code, use the question tool to clarify ALL ambiguities, uncertainties, and implementation choices in the user request. **This is your ONLY chance to ask questions - be thorough and ask everything you need to know.**
 
 ### Phase 2: Design
 Goal: Design an implementation approach.

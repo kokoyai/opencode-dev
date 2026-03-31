@@ -115,8 +115,10 @@ export namespace Agent {
                 noEarlyStop: true,
               },
               permission: Permission.merge(
+                defaults,
                 Permission.fromConfig({
                   "*": "allow",
+                  question: "deny",
                 }),
                 user,
               ),
@@ -133,8 +135,8 @@ export namespace Agent {
               permission: Permission.merge(
                 defaults,
                 Permission.fromConfig({
-                  question: "allow",
-                  plan_enter: "allow",
+                  question: "deny",
+                  plan_enter: "deny",
                 }),
                 user,
               ),
