@@ -107,7 +107,7 @@ export namespace Agent {
           const agents: Record<string, Info> = {
             superpower: {
               name: "superpower",
-              description: "Never stop early. Must plan, use subagents when helpful, implement, verify, and iterate until done.",
+              description: "Spec-first, TDD, subagent-driven software development workflow. Use for building features, debugging, or completing branches.",
               options: {
                 mustPlan: true,
                 mustUseSubagent: true,
@@ -122,7 +122,8 @@ export namespace Agent {
               ),
               mode: "primary",
               native: true,
-              steps: 50,
+              steps: 100,
+              temperature: 0.3,
               prompt: PROMPT_SUPERPOWER,
             },
             build: {
