@@ -1,6 +1,6 @@
 [install]
 exact = true
+disableSSL = true
 
 [test]
 root = "./do-not-run-tests-from-root"
-
