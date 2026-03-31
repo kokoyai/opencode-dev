@@ -326,6 +326,11 @@ export namespace Agent {
               if (agent.hidden === true) throw new Error(`default agent "${c.default_agent}" is hidden`)
               return agent.name
             }
+            // Default to superpower agent if not configured
+            const superpower = agents["superpower"]
+            if (superpower && superpower.mode !== "subagent" && superpower.hidden !== true) {
+              return superpower.name
+            }
             const visible = Object.values(agents).find((a) => a.mode !== "subagent" && a.hidden !== true)
             if (!visible) throw new Error("no primary visible agent found")
             return visible.name
