@@ -13,6 +13,7 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_SUPERPOWER from "./prompt/superpower.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@/global"
@@ -104,6 +105,29 @@ export namespace Agent {
           const user = Permission.fromConfig(cfg.permission ?? {})
 
           const agents: Record<string, Info> = {
+            superpower: {
+              name: "superpower",
+              description: "Never stop early. Must plan, use subagents when helpful, implement, verify, and iterate until done.",
+              options: {
+                mustPlan: true,
+                mustUseSubagent: true,
+                mustVerify: true,
+                noEarlyStop: true,
+              },
+              permission: Permission.merge(
+                defaults,
+                Permission.fromConfig({
+                  question: "allow",
+                  plan_enter: "allow",
+                  plan_exit: "allow",
+                }),
+                user,
+              ),
+              mode: "primary",
+              native: true,
+              steps: 50,
+              prompt: PROMPT_SUPERPOWER,
+            },
             build: {
               name: "build",
               description: "The default agent. Executes tools based on configured permissions.",

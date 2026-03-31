@@ -52,6 +52,10 @@ import { makeRuntime } from "@/effect/run-service"
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
 
+const SUPERPOWER_REMINDER = `<system-reminder>
+Before implementation, create a concrete plan. For non-trivial work, use explore/general subagents. Do not finish before running concrete verification (tests, build commands, etc.).
+</system-reminder>`
+
 const STRUCTURED_OUTPUT_DESCRIPTION = `Use this tool to return your final response in the requested structured format.
 
 IMPORTANT:
@@ -270,6 +274,16 @@ export namespace SessionPrompt {
               sessionID: userMessage.info.sessionID,
               type: "text",
               text: BUILD_SWITCH,
+              synthetic: true,
+            })
+          }
+          if (input.agent.name === "superpower") {
+            userMessage.parts.push({
+              id: PartID.ascending(),
+              messageID: userMessage.info.id,
+              sessionID: userMessage.info.sessionID,
+              type: "text",
+              text: SUPERPOWER_REMINDER,
               synthetic: true,
             })
           }
@@ -1328,6 +1342,32 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           throw new Error("Impossible")
         })
 
+      const hasRecentVerification = Effect.fnUntraced(function* (sessionID: SessionID, afterUserID: MessageID) {
+        const msgs = yield* Effect.promise(() => MessageV2.filterCompacted(MessageV2.stream(sessionID)))
+        for (const msg of msgs) {
+          if (msg.info.id <= afterUserID) continue
+          for (const part of msg.parts) {
+            if (part.type !== "tool") continue
+            if (part.state.status !== "completed") continue
+            if (part.tool === "bash") {
+              const cmd = (part.state.input as any)?.command ?? ""
+              const output = (part.state.output as string) ?? ""
+              if (cmd.trim() && output.trim()) return true
+            }
+          }
+        }
+        return false
+      })
+
+      const hasRecentSubtask = Effect.fnUntraced(function* (sessionID: SessionID, afterUserID: MessageID) {
+        const msgs = yield* Effect.promise(() => MessageV2.filterCompacted(MessageV2.stream(sessionID)))
+        for (const msg of msgs) {
+          if (msg.info.id <= afterUserID) continue
+          if (msg.parts.some((p) => p.type === "subtask")) return true
+        }
+        return false
+      })
+
       const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
         function* (sessionID: SessionID) {
           let structured: unknown | undefined
@@ -1360,6 +1400,42 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               !["tool-calls"].includes(lastAssistant.finish) &&
               lastUser.id < lastAssistant.id
             ) {
+              const agent = yield* agents.get(lastUser.agent)
+              const mustVerify = agent?.options?.mustVerify === true
+              const noEarlyStop = agent?.options?.noEarlyStop === true
+              const mustUseSubagent = agent?.options?.mustUseSubagent === true
+
+              if (noEarlyStop && mustVerify && !lastAssistant.error) {
+                const verified = yield* hasRecentVerification(sessionID, lastUser.id)
+                const usedSubagent = yield* hasRecentSubtask(sessionID, lastUser.id)
+
+                if (!verified) {
+                  log.info("blocking exit: no verification found", { sessionID })
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    messageID: lastUser.id,
+                    sessionID,
+                    type: "text",
+                    synthetic: true,
+                    text: "<system-reminder>You have not completed concrete verification. Continue working, run the appropriate validation program (tests, build, etc.), and only finish after verified success.</system-reminder>",
+                  })
+                  continue
+                }
+
+                if (mustUseSubagent && step <= 2 && !usedSubagent) {
+                  log.info("blocking exit: no subagent used", { sessionID })
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    messageID: lastUser.id,
+                    sessionID,
+                    type: "text",
+                    synthetic: true,
+                    text: "<system-reminder>You must call at least one subagent before finalizing. Use explore for discovery or general for design.</system-reminder>",
+                  })
+                  continue
+                }
+              }
+
               log.info("exiting loop", { sessionID })
               break
             }
