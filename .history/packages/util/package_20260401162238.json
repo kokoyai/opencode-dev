@@ -1,0 +1,14 @@
+{
+  "name": "@opencode-ai/util",
+  "version": "1.3.13",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./error": "./src/error.ts",
+    "./encode": "./src/encode.ts",
+    "./identifier": "./src/identifier.ts",
+    "./iife": "./src/iife.ts",
+    "./binary": "./src/binary.ts"
+  }
+}

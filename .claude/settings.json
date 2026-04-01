@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(bun -e ':*)"
+      "Bash(bun -e ':*)",
+      "Bash(bun pm:*)"
     ]
   }
 }
