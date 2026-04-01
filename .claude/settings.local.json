@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun run:*)",
+      "Bash(npx tsc:*)",
+      "Bash(bun x:*)",
+      "Bash(node -e \"require\\(''fs''\\).readFileSync\\(''packages/opencode/src/session/llm.ts'', ''utf8''\\); console.log\\(''File syntax OK''\\)\")",
+      "Bash(node -e \"require\\(''fs''\\).readFileSync\\(''c:/Users/amin/Desktop/opencode-dev/packages/opencode/src/session/llm.ts'', ''utf8''\\); console.log\\(''File readable OK''\\)\")"
+    ]
+  }
+}

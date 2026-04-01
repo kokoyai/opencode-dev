@@ -48,6 +48,9 @@ export namespace LLM {
 
   export class Service extends ServiceMap.Service<Service, Interface>()("@opencode/LLM") {}
 
+  // 重试配置：2秒延迟，无限重试
+  const RETRY_DELAY_MS = 2000
+
   export const layer = Layer.effect(
     Service,
     Effect.gen(function* () {
@@ -63,11 +66,25 @@ export namespace LLM {
                 const queue = yield* Queue.unbounded<Event, unknown | Cause.Done>()
 
                 yield* Effect.promise(async () => {
-                  const result = await LLM.stream({ ...input, abort: ctrl.signal })
-                  for await (const event of result.fullStream) {
-                    if (!Queue.offerUnsafe(queue, event)) break
+                  let attempt = 0
+                  while (true) {
+                    try {
+                      const result = await LLM.stream({ ...input, abort: ctrl.signal })
+                      for await (const event of result.fullStream) {
+                        if (!Queue.offerUnsafe(queue, event)) break
+                      }
+                      Queue.endUnsafe(queue)
+                      return // 成功完成，退出循环
+                    } catch (error) {
+                      attempt++
+                      log.warn("model request failed, retrying...", {
+                        attempt,
+                        delayMs: RETRY_DELAY_MS,
+                        error: error instanceof Error ? error.message : String(error),
+                      })
+                      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
+                    }
                   }
-                  Queue.endUnsafe(queue)
                 }).pipe(
                   Effect.catchCause((cause) => Effect.sync(() => void Queue.failCauseUnsafe(queue, cause))),
                   Effect.onInterrupt(() => Effect.sync(() => ctrl.abort())),
