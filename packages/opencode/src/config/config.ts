@@ -1079,6 +1079,15 @@ export namespace Config {
             ),
         })
         .optional(),
+      notify: z
+        .object({
+          feishu_webhook: z
+            .string()
+            .optional()
+            .describe("Feishu bot webhook URL for notifications (e.g., https://open.feishu.cn/open-apis/bot/v2/hook/xxx)"),
+        })
+        .optional()
+        .describe("Notification configuration for alerts and status updates"),
     })
     .strict()
     .meta({
