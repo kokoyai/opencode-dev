@@ -297,6 +297,28 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       setReady(true)
     })
 
+  // Global Ctrl+C handler for triple-press exit (works on Windows where SIGINT is disabled)
+  useKeyboard((evt) => {
+    if (evt.ctrl && evt.name === "c") {
+      // If there's a selection and copy-on-select is enabled, try to copy first
+      if (!Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT && renderer.getSelection()) {
+        if (Selection.copy(renderer, toast)) {
+          evt.preventDefault()
+          evt.stopPropagation()
+          return
+        }
+        renderer.clearSelection()
+      }
+
+      evt.preventDefault()
+      evt.stopPropagation()
+
+      if (exit.handleCtrlC()) {
+        exit()
+      }
+    }
+  })
+
   useKeyboard((evt) => {
     if (!Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
     if (!renderer.getSelection()) return

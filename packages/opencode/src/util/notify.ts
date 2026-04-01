@@ -68,7 +68,7 @@ export const Notify = {
         const response = await fetch(webhookUrl, {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
           },
           body: JSON.stringify(body),
         })
@@ -94,7 +94,7 @@ export const Notify = {
         Effect.catchAll((e) => {
           // 通知失败不影响主流程，只记录日志
           console.warn("[notify] failed to send notification:", e.message)
-          return Effect.void
+          return Effect.succeed(undefined)
         }),
       )
     }),

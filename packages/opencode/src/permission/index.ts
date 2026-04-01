@@ -10,6 +10,7 @@ import { PermissionTable } from "@/session/session.sql"
 import { Database, eq } from "@/storage/db"
 import { Log } from "@/util/log"
 import { Wildcard } from "@/util/wildcard"
+import { Notify } from "@/util/notify"
 import { Deferred, Effect, Layer, Schema, ServiceMap } from "effect"
 import os from "os"
 import z from "zod"
@@ -192,6 +193,15 @@ export namespace Permission {
         const deferred = yield* Deferred.make<void, RejectedError | CorrectedError>()
         pending.set(id, { info, deferred })
         void Bus.publish(Event.Asked, info)
+
+        // 发送飞书通知 - 权限请求
+        const patternStr = info.patterns.length === 1 ? info.patterns[0] : info.patterns.slice(0, 3).join("\n") + (info.patterns.length > 3 ? `\n... (${info.patterns.length - 3} more)` : "")
+        void Effect.runPromise(Effect.ignore(Notify.send({
+          title: "🔐 权限请求",
+          message: `**权限**: ${info.permission}\n**模式**:\n${patternStr}\n\n请前往 TUI 确认或拒绝。`,
+          status: "warning",
+        })))
+
         return yield* Effect.ensuring(
           Deferred.await(deferred),
           Effect.sync(() => {
@@ -211,6 +221,14 @@ export namespace Permission {
           requestID: existing.info.id,
           reply: input.reply,
         })
+
+        // 发送飞书通知 - 权限回复
+        const replyText = input.reply === "once" ? "允许一次" : input.reply === "always" ? "始终允许" : "拒绝"
+        void Effect.runPromise(Effect.ignore(Notify.send({
+          title: input.reply === "reject" ? "❌ 权限已拒绝" : "✅ 权限已授权",
+          message: `**权限**: ${existing.info.permission}\n**操作**: ${replyText}\n**会话**: ${existing.info.sessionID}`,
+          status: input.reply === "reject" ? "error" : "success",
+        })))
 
         if (input.reply === "reject") {
           yield* Deferred.fail(

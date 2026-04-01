@@ -117,6 +117,7 @@ export namespace Agent {
                 infiniteLoop: true,
                 autoCommit: true,
                 enableInspector: true,
+                enableGatekeeping: true,
               },
               permission: Permission.merge(
                 defaults,

@@ -18,6 +18,7 @@ import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectory } from "./external-directory"
+import { Session } from "../session"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 
@@ -153,6 +154,9 @@ export const EditTool = Tool.define("edit", {
         errors.length > MAX_DIAGNOSTICS_PER_FILE ? `\n... and ${errors.length - MAX_DIAGNOSTICS_PER_FILE} more` : ""
       output += `\n\nLSP errors detected in this file, please fix:\n<diagnostics file="${filePath}">\n${limited.map(LSP.Diagnostic.pretty).join("\n")}${suffix}\n</diagnostics>`
     }
+
+    // Update lastEditAt for gatekeeping
+    await Session.setLastEdit({ sessionID: ctx.sessionID })
 
     return {
       metadata: {

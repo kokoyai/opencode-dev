@@ -84,6 +84,8 @@ export namespace Session {
         compacting: row.time_compacting ?? undefined,
         archived: row.time_archived ?? undefined,
       },
+      lastEditAt: row.last_edit_at ?? undefined,
+      lastAuditPassAt: row.last_audit_pass_at ?? undefined,
     }
   }
 
@@ -108,6 +110,8 @@ export namespace Session {
       time_updated: info.time.updated,
       time_compacting: info.time.compacting,
       time_archived: info.time.archived,
+      last_edit_at: info.lastEditAt ?? null,
+      last_audit_pass_at: info.lastAuditPassAt ?? null,
     }
   }
 
@@ -150,6 +154,9 @@ export namespace Session {
         compacting: z.number().optional(),
         archived: z.number().optional(),
       }),
+      // Gatekeeping timestamps
+      lastEditAt: z.number().optional(),
+      lastAuditPassAt: z.number().optional(),
       permission: Permission.Ruleset.optional(),
       revert: z
         .object({
@@ -330,6 +337,8 @@ export namespace Session {
     }) => Effect.Effect<void>
     readonly clearRevert: (sessionID: SessionID) => Effect.Effect<void>
     readonly setSummary: (input: { sessionID: SessionID; summary: Info["summary"] }) => Effect.Effect<void>
+    readonly setLastEdit: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
+    readonly setAuditPass: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
     readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
     readonly messages: (input: { sessionID: SessionID; limit?: number }) => Effect.Effect<MessageV2.WithParts[]>
     readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
@@ -579,6 +588,22 @@ export namespace Session {
         yield* patch(input.sessionID, { time: { updated: Date.now() }, summary: input.summary })
       })
 
+      const setLastEdit = Effect.fn("Session.setLastEdit")(function* (input: {
+        sessionID: SessionID
+        time?: number
+      }) {
+        const timestamp = input.time ?? Date.now()
+        yield* patch(input.sessionID, { lastEditAt: timestamp })
+      })
+
+      const setAuditPass = Effect.fn("Session.setAuditPass")(function* (input: {
+        sessionID: SessionID
+        time?: number
+      }) {
+        const timestamp = input.time ?? Date.now()
+        yield* patch(input.sessionID, { lastAuditPassAt: timestamp })
+      })
+
       const diff = Effect.fn("Session.diff")(function* (sessionID: SessionID) {
         return yield* Effect.tryPromise(() => Storage.read<Snapshot.FileDiff[]>(["session_diff", sessionID])).pipe(
           Effect.orElseSucceed(() => [] as Snapshot.FileDiff[]),
@@ -665,6 +690,8 @@ export namespace Session {
         setRevert,
         clearRevert,
         setSummary,
+        setLastEdit,
+        setAuditPass,
         diff,
         messages,
         children,
@@ -726,6 +753,14 @@ export namespace Session {
 
   export const setSummary = fn(z.object({ sessionID: SessionID.zod, summary: Info.shape.summary }), (input) =>
     runPromise((svc) => svc.setSummary({ sessionID: input.sessionID, summary: input.summary })),
+  )
+
+  export const setLastEdit = fn(z.object({ sessionID: SessionID.zod, time: z.number().optional() }), (input) =>
+    runPromise((svc) => svc.setLastEdit(input)),
+  )
+
+  export const setAuditPass = fn(z.object({ sessionID: SessionID.zod, time: z.number().optional() }), (input) =>
+    runPromise((svc) => svc.setAuditPass(input)),
   )
 
   export const diff = fn(SessionID.zod, (id) => runPromise((svc) => svc.diff(id)))

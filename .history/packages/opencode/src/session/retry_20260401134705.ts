@@ -7,7 +7,7 @@ export namespace SessionRetry {
   export type Err = ReturnType<NamedError["toObject"]>
 
   export const RETRY_INITIAL_DELAY = 2000
-  export const RETRY_LINEAR_STEP =0 // 线性递增步长
+  export const RETRY_LINEAR_STEP = 0 // 线性递增步长
   export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
   export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
 
@@ -41,11 +41,11 @@ export namespace SessionRetry {
           }
         }
 
-        return cap(RETRY_INITIAL_DELAY + RETRY_LINEAR_STEP * (attempt - 1))
+        return cap(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1))
       }
     }
 
-    return cap(Math.min(RETRY_INITIAL_DELAY + RETRY_LINEAR_STEP * (attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
+    return cap(Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
   }
 
   export function retryable(error: Err) {

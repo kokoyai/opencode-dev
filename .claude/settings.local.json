@@ -6,7 +6,10 @@
       "Bash(bun x:*)",
       "Bash(node -e \"require\\(''fs''\\).readFileSync\\(''packages/opencode/src/session/llm.ts'', ''utf8''\\); console.log\\(''File syntax OK''\\)\")",
       "Bash(node -e \"require\\(''fs''\\).readFileSync\\(''c:/Users/amin/Desktop/opencode-dev/packages/opencode/src/session/llm.ts'', ''utf8''\\); console.log\\(''File readable OK''\\)\")",
-      "Bash(bun build:*)"
+      "Bash(bun build:*)",
+      "Bash(bun -e ':*)",
+      "Bash(bun -e \"import { Effect } from ''effect''; console.log\\(''catchAll:'', typeof Effect.catchAll\\); console.log\\(''ignore:'', typeof Effect.ignore\\); console.log\\(''runPromise:'', typeof Effect.runPromise\\)\")",
+      "Bash(bun install:*)"
     ]
   }
 }

@@ -41,11 +41,11 @@ export namespace SessionRetry {
           }
         }
 
-        return cap(RETRY_INITIAL_DELAY + RETRY_LINEAR_STEP * (attempt - 1))
+        return cap(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1))
       }
     }
 
-    return cap(Math.min(RETRY_INITIAL_DELAY + RETRY_LINEAR_STEP * (attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
+    return cap(Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
   }
 
   export function retryable(error: Err) {

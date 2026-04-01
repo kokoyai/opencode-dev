@@ -13,6 +13,7 @@ import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { trimDiff } from "./edit"
 import { assertExternalDirectory } from "./external-directory"
+import { Session } from "../session"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
@@ -70,6 +71,9 @@ export const WriteTool = Tool.define("write", {
       projectDiagnosticsCount++
       output += `\n\nLSP errors detected in other files:\n<diagnostics file="${file}">\n${limited.map(LSP.Diagnostic.pretty).join("\n")}${suffix}\n</diagnostics>`
     }
+
+    // Update lastEditAt for gatekeeping
+    await Session.setLastEdit({ sessionID: ctx.sessionID })
 
     return {
       title: path.relative(Instance.worktree, filepath),
