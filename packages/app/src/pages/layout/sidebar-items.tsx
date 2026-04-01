@@ -93,6 +93,7 @@ const SessionRow = (props: {
   isWorking: Accessor<boolean>
   hasPermissions: Accessor<boolean>
   hasError: Accessor<boolean>
+  sessionError: Accessor<string | undefined>
   unseenCount: Accessor<number>
   setHoverSession: (id: string | undefined) => void
   clearHoverProjectSoon: () => void
@@ -122,6 +123,9 @@ const SessionRow = (props: {
       <Switch fallback={<Icon name="dash" size="small" class="text-icon-weak" />}>
         <Match when={props.isWorking()}>
           <Spinner class="size-[15px]" />
+        </Match>
+        <Match when={props.sessionError()}>
+          <Icon name="alert-circle" size="small" class="text-text-diff-delete-base" />
         </Match>
         <Match when={props.hasPermissions()}>
           <div class="size-1.5 rounded-full bg-surface-warning-strong" />
@@ -213,19 +217,25 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
       return !permission.autoResponds(item, props.session.directory)
     })
   })
+  const sessionStatus = createMemo(() => sessionStore.session_status[props.session.id])
+  const sessionError = createMemo(() => {
+    const status = sessionStatus()
+    if (status?.type === "error") return status.message
+    return undefined
+  })
   const isWorking = createMemo(() => {
     if (hasPermissions()) return false
+    if (sessionError()) return false // error 状态不应该被认为是 working
     const pending = (sessionStore.message[props.session.id] ?? []).findLast(
       (message) =>
         message.role === "assistant" &&
         typeof (message as { time?: { completed?: unknown } }).time?.completed !== "number",
     )
-    const status = sessionStore.session_status[props.session.id]
+    const status = sessionStatus()
     return (
       pending !== undefined ||
       status?.type === "busy" ||
-      status?.type === "retry" ||
-      (status !== undefined && status.type !== "idle")
+      status?.type === "retry"
     )
   })
 
@@ -295,6 +305,7 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
       isWorking={isWorking}
       hasPermissions={hasPermissions}
       hasError={hasError}
+      sessionError={sessionError}
       unseenCount={unseenCount}
       setHoverSession={props.setHoverSession}
       clearHoverProjectSoon={props.clearHoverProjectSoon}

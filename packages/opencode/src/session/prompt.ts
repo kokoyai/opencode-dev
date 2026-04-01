@@ -122,7 +122,12 @@ export namespace SessionPrompt {
         const runner = Runner.make<MessageV2.WithParts>(scope, {
           onIdle: Effect.gen(function* () {
             runners.delete(sessionID)
-            yield* status.set(sessionID, { type: "idle" })
+            // 只在当前状态不是 error 时才设置为 idle
+            // 这样可以保留 halt 函数设置的 error 状态
+            const currentStatus = yield* status.get(sessionID)
+            if (currentStatus.type !== "error") {
+              yield* status.set(sessionID, { type: "idle" })
+            }
           }),
           onBusy: status.set(sessionID, { type: "busy" }),
           onInterrupt: lastAssistant(sessionID),

@@ -21,6 +21,11 @@ export namespace SessionStatus {
       z.object({
         type: z.literal("busy"),
       }),
+      z.object({
+        type: z.literal("error"),
+        message: z.string(),
+        error: z.any().optional(),
+      }),
     ])
     .meta({
       ref: "SessionStatus",
@@ -73,7 +78,7 @@ export namespace SessionStatus {
       const set = Effect.fn("SessionStatus.set")(function* (sessionID: SessionID, status: Info) {
         const data = yield* InstanceState.get(state)
         yield* bus.publish(Event.Status, { sessionID, status })
-        if (status.type === "idle") {
+        if (status.type === "idle" || status.type === "error") {
           yield* bus.publish(Event.Idle, { sessionID })
           data.delete(sessionID)
           return

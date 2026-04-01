@@ -424,7 +424,9 @@ export namespace SessionProcessor {
             sessionID: ctx.assistantMessage.sessionID,
             error: ctx.assistantMessage.error,
           })
-          yield* status.set(ctx.sessionID, { type: "idle" })
+          // 设置 error 状态而不是 idle，让 UI 能够显示错误
+          const errorMessage = error instanceof Error ? error.message : (error as any)?.data?.message ?? "Unknown error"
+          yield* status.set(ctx.sessionID, { type: "error", message: errorMessage, error })
         })
 
         const abort = Effect.fn("SessionProcessor.abort")(() =>

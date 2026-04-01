@@ -13,6 +13,7 @@ import { Spinner } from "@opencode-ai/ui/spinner"
 import { SessionTurn } from "@opencode-ai/ui/session-turn"
 import { ScrollView } from "@opencode-ai/ui/scroll-view"
 import { TextField } from "@opencode-ai/ui/text-field"
+import { Tooltip } from "@opencode-ai/ui/tooltip"
 import type { AssistantMessage, Message as MessageType, Part, TextPart, UserMessage } from "@opencode-ai/sdk/v2"
 import { showToast } from "@opencode-ai/ui/toast"
 import { Binary } from "@opencode-ai/util/binary"
@@ -248,7 +249,17 @@ export function MessageTimeline(props: {
     if (!id) return idle
     return sync.data.session_status[id] ?? idle
   })
-  const working = createMemo(() => !!pending() || sessionStatus().type !== "idle")
+  // error 状态不应该被认为是 working
+  const working = createMemo(() => {
+    const status = sessionStatus()
+    if (status.type === "error") return false
+    return !!pending() || status.type === "busy" || status.type === "retry"
+  })
+  const sessionError = createMemo(() => {
+    const status = sessionStatus()
+    if (status.type === "error") return status.message
+    return undefined
+  })
   const tint = createMemo(() => messageAgentColor(sessionMessages(), sync.data.agent))
 
   const [timeoutDone, setTimeoutDone] = createSignal(true)
@@ -674,6 +685,15 @@ export function MessageTimeline(props: {
                           </div>
                         </Show>
                       </div>
+                      <Show when={sessionError()}>
+                        {(err) => (
+                          <Tooltip value={err()} placement="bottom">
+                            <div class="shrink-0 flex items-center justify-center mr-2">
+                              <Icon name="alert-circle" size="small" class="text-text-diff-delete-base" />
+                            </div>
+                          </Tooltip>
+                        )}
+                      </Show>
                       <Show when={titleValue() || title.editing}>
                         <Show
                           when={title.editing}
