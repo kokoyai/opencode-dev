@@ -16,7 +16,4 @@
     "github-triage": false,
     "github-pr-search": false,
   },
-  "notify": {
-    "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/fbb7b3cc-afa2-41b6-b903-7a6d3d6393b9"
-  },
 }
