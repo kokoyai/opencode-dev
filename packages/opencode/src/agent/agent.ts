@@ -14,6 +14,7 @@ import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import PROMPT_SUPERPOWER from "./prompt/superpower.txt"
+import PROMPT_INSPECTOR from "./prompt/inspector.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@/global"
@@ -113,6 +114,9 @@ export namespace Agent {
                 mustUseSubagent: true,
                 mustVerify: true,
                 noEarlyStop: true,
+                infiniteLoop: true,
+                autoCommit: true,
+                enableInspector: true,
               },
               permission: Permission.merge(
                 defaults,
@@ -253,6 +257,26 @@ export namespace Agent {
                 user,
               ),
               prompt: PROMPT_SUMMARY,
+            },
+            inspector: {
+              name: "inspector",
+              description: "严格检查者 - 不信任 AI 书面结果，亲自运行测试/构建验证。发现问题打回给 superpower 修改。",
+              mode: "subagent",
+              native: true,
+              prompt: PROMPT_INSPECTOR,
+              permission: Permission.merge(
+                defaults,
+                Permission.fromConfig({
+                  "*": "deny",
+                  bash: "allow",
+                  read: "allow",
+                  glob: "allow",
+                  grep: "allow",
+                  list: "allow",
+                }),
+                user,
+              ),
+              options: {},
             },
           }
 

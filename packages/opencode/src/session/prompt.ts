@@ -42,6 +42,7 @@ import { SessionStatus } from "./status"
 import { LLM } from "./llm"
 import { Shell } from "@/shell/shell"
 import { AppFileSystem } from "@/filesystem"
+import { Filesystem } from "@/util/filesystem"
 import { Truncate } from "@/tool/truncate"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
@@ -1497,6 +1498,363 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   })
                   continue
                 }
+              }
+
+              // Inspector 循环检查：superpower 完成后调用 inspector 验证（4次独立检查）
+              const enableInspector = agent?.options?.enableInspector !== false && agent?.name === "superpower"
+              if (enableInspector) {
+                log.info("starting 4-round inspector verification", { sessionID })
+
+                // 获取 inspector agent 配置
+                const inspectorAgent = yield* agents.get("inspector")
+                const inspectorPermission = Permission.merge(
+                  inspectorAgent?.permission ?? [],
+                  session.permission ?? [],
+                )
+
+                const taskTool = yield* Effect.promise(() => TaskTool.init())
+                const INSPECTOR_ROUNDS = 4
+                let allPassed = true
+                let lastInspectorResult = ""
+                let lastInspectorError: Error | undefined
+                const roundResults: { round: number; passed: boolean; result: string }[] = []
+
+                // 执行 4 次独立检查
+                for (let round = 1; round <= INSPECTOR_ROUNDS; round++) {
+                  log.info(`inspector round ${round}/${INSPECTOR_ROUNDS}`, { sessionID })
+
+                  let inspectorResult: any
+                  let inspectorError: Error | undefined
+
+                  try {
+                    inspectorResult = yield* Effect.promise((signal) =>
+                      taskTool.execute(
+                        {
+                          prompt: `【第 ${round}/${INSPECTOR_ROUNDS} 轮检查】
+
+全面检查项目代码质量，不要遗漏任何问题。
+
+项目目录: ${Instance.directory}
+
+检查内容：
+1. 测试是否全部通过
+2. 构建是否成功
+3. 类型检查是否通过
+4. Lint 是否通过
+5. 代码是否有明显 bug
+6. 边界条件是否处理
+7. 错误处理是否完善
+
+这是第 ${round} 次检查，请仔细审查，不要放过任何问题。`,
+                          description: `Inspector 检查 ${round}/${INSPECTOR_ROUNDS}`,
+                          subagent_type: "inspector",
+                        },
+                        {
+                          agent: "inspector",
+                          messageID: lastUser.id,
+                          sessionID,
+                          abort: signal,
+                          callID: ulid(),
+                          extra: { bypassAgentCheck: true },
+                          messages: msgs,
+                          metadata: () => Promise.resolve(),
+                          ask: (req: any) =>
+                            Effect.runPromise(
+                              permission.ask({
+                                ...req,
+                                sessionID,
+                                ruleset: inspectorPermission,
+                              }),
+                            ),
+                        },
+                      ),
+                    )
+                  } catch (e) {
+                    inspectorError = e instanceof Error ? e : new Error(String(e))
+                    log.warn(`inspector round ${round} execution failed`, { error: inspectorError })
+                  }
+
+                  const resultText = inspectorResult?.output || ""
+                  lastInspectorResult = resultText
+                  lastInspectorError = inspectorError
+
+                  // 判断本轮结果
+                  const isFailed =
+                    resultText.includes("### 状态: FAILED") ||
+                    resultText.includes("状态: FAILED") ||
+                    resultText.includes("FAILED:") ||
+                    inspectorError
+
+                  const isRegressed =
+                    resultText.includes("### 状态: REGRESSED") ||
+                    resultText.includes("状态: REGRESSED") ||
+                    resultText.includes("REGRESSED:")
+
+                  const isPassed =
+                    resultText.includes("### 状态: PASSED") ||
+                    resultText.includes("状态: PASSED") ||
+                    resultText.includes("PASSED:")
+
+                  const roundPassed = isPassed && !isFailed && !isRegressed && !inspectorError
+                  roundResults.push({ round, passed: roundPassed, result: resultText })
+
+                  // 如果本轮失败或退化，停止后续检查
+                  if (!roundPassed) {
+                    allPassed = false
+                    yield* sessions.updatePart({
+                      id: PartID.ascending(),
+                      messageID: lastUser.id,
+                      sessionID,
+                      type: "text",
+                      synthetic: true,
+                      text: `<system-reminder>
+## 🔴 Inspector 第 ${round}/${INSPECTOR_ROUNDS} 轮检查失败
+
+${resultText || inspectorError?.message || "检查失败"}
+
+---
+已检查 ${round}/${INSPECTOR_ROUNDS} 轮，发现问题，停止后续检查。
+</system-reminder>`,
+                    })
+                    break
+                  }
+
+                  // 本轮通过，继续下一轮
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    messageID: lastUser.id,
+                    sessionID,
+                    type: "text",
+                    synthetic: true,
+                    text: `<system-reminder>✅ Inspector 第 ${round}/${INSPECTOR_ROUNDS} 轮检查通过</system-reminder>`,
+                  })
+                }
+
+                // 写入 memory.md 记录迭代历史
+                const writeMemory = (content: string) =>
+                  Effect.gen(function* () {
+                    try {
+                      const memoryPath = path.join(Instance.directory, "memory.md")
+                      const existing = yield* Effect.promise(() =>
+                        Filesystem.exists(memoryPath).then((exists) => (exists ? Filesystem.read(memoryPath) : "")),
+                      )
+                      const newContent = existing ? `${existing}\n\n---\n\n${content}` : content
+                      yield* Effect.promise(() => Filesystem.write(memoryPath, newContent))
+                    } catch (e) {
+                      log.warn("failed to write memory.md", { error: e })
+                    }
+                  })
+
+                // 从 lastAssistant 提取本次做了什么
+                const extractWorkSummary = (msgs: MessageV2.WithParts[]): string => {
+                  const lastAssistantMsg = [...msgs].reverse().find((m) => m.role === "assistant")
+                  if (!lastAssistantMsg) return "执行了任务"
+                  const textParts = lastAssistantMsg.parts.filter((p) => p.type === "text")
+                  const text = textParts.map((p) => (p as any).text || "").join("\n")
+                  // 提取前500字符作为摘要
+                  return text.slice(0, 500) + (text.length > 500 ? "..." : "")
+                }
+
+                // 4 轮检查完成后处理结果
+                if (!allPassed) {
+                  // 检查是否退化
+                  const isRegressed =
+                    lastInspectorResult.includes("### 状态: REGRESSED") ||
+                    lastInspectorResult.includes("状态: REGRESSED") ||
+                    lastInspectorResult.includes("REGRESSED:")
+
+                  // 提取问题详情
+                  const failureSection = lastInspectorResult.split("### 失败详情")[1]?.split("### 总结")[0] ||
+                    lastInspectorResult.split("### 退化详情")[1]?.split("### 总结")[0] || ""
+
+                  // 提取检查统计
+                  const statsMatch = lastInspectorResult.match(/\|[^|]+\|[^|]+\|[^|]+\|[^|]+\|[^|]+\|[^|]+\|/g)
+                  const checkStats = statsMatch ? statsMatch.slice(1).join("\n") : ""
+
+                  if (isRegressed) {
+                    log.info("inspector detected regression, rolling back", { sessionID })
+
+                    // 回滚 git
+                    try {
+                      yield* Effect.promise(() =>
+                        Process.run(["git", "reset", "--hard", "HEAD"], { cwd: Instance.directory }),
+                      )
+                      yield* Effect.promise(() =>
+                        Process.run(["git", "clean", "-fd"], { cwd: Instance.directory }),
+                      )
+                    } catch (e) {
+                      log.warn("git rollback failed", { error: e })
+                    }
+                  }
+
+                  // 写入 memory.md - 迭代失败记录
+                  const timestamp = new Date().toISOString()
+                  const workSummary = extractWorkSummary(msgs)
+                  const memoryContent = `# 迭代 #${step} - 检查失败
+
+## 时间
+${timestamp}
+
+## 检查结果
+
+| 轮次 | 状态 |
+|------|------|
+${roundResults.map((r) => `| 第 ${r.round} 轮 | ${r.passed ? "✅ 通过" : "❌ 失败"} |`).join("\n")}
+
+## 本次尝试
+
+${workSummary}
+
+## 发现的问题
+
+${failureSection || lastInspectorResult.slice(0, 1000) || "检查失败"}
+
+## 状态
+${isRegressed ? "⚠️ 质量退化，已回滚" : "❌ 检查未通过，需要修复"}
+`
+                  yield* writeMemory(memoryContent)
+
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    messageID: lastUser.id,
+                    sessionID,
+                    type: "text",
+                    synthetic: true,
+                    text: `<system-reminder>
+## ⚠️ Inspector 检查失败
+
+${isRegressed ? "代码质量退化，已自动回滚。" : "检查未通过。"}
+
+详情已写入 \`memory.md\`。
+
+---
+请 superpower 修复问题后重新提交。这是第 ${step} 次迭代。
+</system-reminder>`,
+                  })
+
+                  continue
+                }
+
+                // 4 轮全部通过，写入 memory.md - 迭代成功记录
+                const timestamp = new Date().toISOString()
+                const workSummary = extractWorkSummary(msgs)
+                const successMemory = `# 迭代 #${step} - 检查通过 ✅
+
+## 时间
+${timestamp}
+
+## 检查结果
+
+| 轮次 | 状态 | 说明 |
+|------|------|------|
+| 第 1 轮 | ✅ 通过 | 全面检查通过 |
+| 第 2 轮 | ✅ 通过 | 全面检查通过 |
+| 第 3 轮 | ✅ 通过 | 全面检查通过 |
+| 第 4 轮 | ✅ 通过 | 全面检查通过 |
+
+## 本次完成的工作
+
+${workSummary}
+
+## 解决的问题 / 实现的效果
+
+*请 superpower 在后续迭代中补充具体内容*
+
+## 状态
+✅ 4 轮检查全部通过，已提交代码
+`
+                yield* writeMemory(successMemory)
+
+                yield* sessions.updatePart({
+                  id: PartID.ascending(),
+                  messageID: lastUser.id,
+                  sessionID,
+                  type: "text",
+                  synthetic: true,
+                  text: `<system-reminder>
+## ✅ Inspector 4 轮检查全部通过
+
+| 轮次 | 状态 |
+|------|------|
+| 第 1 轮 | ✅ 通过 |
+| 第 2 轮 | ✅ 通过 |
+| 第 3 轮 | ✅ 通过 |
+| 第 4 轮 | ✅ 通过 |
+
+迭代 #${step} 记录已写入 \`memory.md\`。
+</system-reminder>`,
+                })
+              }
+
+              // 自动提交：如果 agent 启用了 autoCommit，在通过后自动 git commit
+              const autoCommit = agent?.options?.autoCommit === true
+              if (autoCommit) {
+                try {
+                  const statusResult = yield* Effect.promise(() =>
+                    Process.run(["git", "status", "--porcelain"], { cwd: Instance.directory }),
+                  )
+                  const hasChanges = statusResult.stdout.toString().trim().length > 0
+                  if (hasChanges) {
+                    const sessionTitle = session.title || "AI changes"
+                    const commitMessage = `feat: ${sessionTitle}\n\nCompleted by AI agent: ${agent.name} (iteration ${step})`
+                    log.info("auto-committing changes", { sessionID, commitMessage })
+                    yield* Effect.promise(() =>
+                      Process.run(["git", "add", "-A"], { cwd: Instance.directory }),
+                    )
+                    yield* Effect.promise(() =>
+                      Process.run(["git", "commit", "-m", commitMessage], { cwd: Instance.directory }),
+                    )
+                    yield* sessions.updatePart({
+                      id: PartID.ascending(),
+                      messageID: lastUser.id,
+                      sessionID,
+                      type: "text",
+                      synthetic: true,
+                      text: `<system-reminder>✅ 已自动提交: ${commitMessage.split("\n")[0]}</system-reminder>`,
+                    })
+                  }
+                } catch (e) {
+                  log.warn("auto-commit failed", { error: e })
+                }
+              }
+
+              // 永不停止：PASSED 后继续优化循环
+              const infiniteLoop = agent?.options?.infiniteLoop === true
+              if (infiniteLoop) {
+                // 生成优化方向提示
+                const optimizationHints = [
+                  "性能优化：检查是否有性能瓶颈，优化算法复杂度",
+                  "代码质量：重构重复代码，提取公共函数",
+                  "错误处理：增加边界检查和异常处理",
+                  "测试覆盖：补充更多测试用例，提高覆盖率",
+                  "文档完善：添加注释，更新 README",
+                  "安全加固：检查输入验证，防止注入攻击",
+                  "可维护性：简化逻辑，提高代码可读性",
+                ]
+                const randomHint = optimizationHints[Math.floor(Math.random() * optimizationHints.length)]
+
+                yield* sessions.updatePart({
+                  id: PartID.ascending(),
+                  messageID: lastUser.id,
+                  sessionID,
+                  type: "text",
+                  synthetic: true,
+                  text: `<system-reminder>
+## 🔄 继续迭代优化
+
+当前状态：检查通过，代码已提交
+迭代次数：${step}
+
+### 下一步优化方向
+${randomHint}
+
+---
+继续完善代码，或按 Ctrl+C 停止。
+</system-reminder>`,
+                })
+
+                // 继续循环，不 break
+                continue
               }
 
               log.info("exiting loop", { sessionID })

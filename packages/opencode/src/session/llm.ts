@@ -48,7 +48,7 @@ export namespace LLM {
 
   export class Service extends ServiceMap.Service<Service, Interface>()("@opencode/LLM") {}
 
-  // 重试配置：2秒延迟，无限重试
+  // 重试配置：2秒延迟
   const RETRY_DELAY_MS = 2000
 
   export const layer = Layer.effect(
@@ -65,6 +65,9 @@ export namespace LLM {
                 )
                 const queue = yield* Queue.unbounded<Event, unknown | Cause.Done>()
 
+                // 检查是否启用无限重试：agent 选项优先，否则使用全局配置
+                const infiniteLoop = input.agent.options?.infiniteLoop === true
+
                 yield* Effect.promise(async () => {
                   let attempt = 0
                   while (true) {
@@ -77,7 +80,12 @@ export namespace LLM {
                       return // 成功完成，退出循环
                     } catch (error) {
                       attempt++
-                      log.warn("model request failed, retrying...", {
+                      // 如果未启用无限重试，抛出错误
+                      if (!infiniteLoop) {
+                        Queue.failCauseUnsafe(queue, Cause.fail(error))
+                        return
+                      }
+                      log.warn("model request failed, retrying (infinite loop mode)...", {
                         attempt,
                         delayMs: RETRY_DELAY_MS,
                         error: error instanceof Error ? error.message : String(error),

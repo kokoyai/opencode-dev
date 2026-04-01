@@ -1071,6 +1071,12 @@ export namespace Config {
             .positive()
             .optional()
             .describe("Timeout in milliseconds for model context protocol (MCP) requests"),
+          infinite_loop: z
+            .boolean()
+            .optional()
+            .describe(
+              "Enable infinite loop mode: model requests will retry forever on any error with 2s delay. Only user interrupt (Ctrl+C) can stop it.",
+            ),
         })
         .optional(),
     })
