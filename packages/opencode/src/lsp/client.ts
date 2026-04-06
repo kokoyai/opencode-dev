@@ -125,12 +125,18 @@ export namespace LSPClient {
       )
     })
 
-    await connection.sendNotification("initialized", {})
+    await withTimeout(
+      connection.sendNotification("initialized", {}),
+      5000, // 5 seconds timeout for initialized notification
+    ).catch((err) => l.warn("LSP initialized notification timeout", { error: err }))
 
     if (input.server.initialization) {
-      await connection.sendNotification("workspace/didChangeConfiguration", {
-        settings: input.server.initialization,
-      })
+      await withTimeout(
+        connection.sendNotification("workspace/didChangeConfiguration", {
+          settings: input.server.initialization,
+        }),
+        5000, // 5 seconds timeout for configuration notification
+      ).catch((err) => l.warn("LSP didChangeConfiguration notification timeout", { error: err }))
     }
 
     const files: {
@@ -148,21 +154,30 @@ export namespace LSPClient {
       notify: {
         async open(input: { path: string }) {
           input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
-          const text = await Filesystem.readText(input.path)
+          const text = await withTimeout(
+            Filesystem.readText(input.path),
+            5000, // 5 seconds timeout for reading file
+          ).catch((err) => {
+            log.error("failed to read file for LSP", { path: input.path, error: err })
+            throw err
+          })
           const extension = path.extname(input.path)
           const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
 
           const version = files[input.path]
           if (version !== undefined) {
             log.info("workspace/didChangeWatchedFiles", input)
-            await connection.sendNotification("workspace/didChangeWatchedFiles", {
-              changes: [
-                {
-                  uri: pathToFileURL(input.path).href,
-                  type: 2, // Changed
-                },
-              ],
-            })
+            await withTimeout(
+              connection.sendNotification("workspace/didChangeWatchedFiles", {
+                changes: [
+                  {
+                    uri: pathToFileURL(input.path).href,
+                    type: 2, // Changed
+                  },
+                ],
+              }),
+              3000, // 3 seconds timeout
+            ).catch((err) => log.warn("LSP notification timeout", { type: "didChangeWatchedFiles", error: err }))
 
             const next = version + 1
             files[input.path] = next
@@ -170,36 +185,45 @@ export namespace LSPClient {
               path: input.path,
               version: next,
             })
-            await connection.sendNotification("textDocument/didChange", {
-              textDocument: {
-                uri: pathToFileURL(input.path).href,
-                version: next,
-              },
-              contentChanges: [{ text }],
-            })
+            await withTimeout(
+              connection.sendNotification("textDocument/didChange", {
+                textDocument: {
+                  uri: pathToFileURL(input.path).href,
+                  version: next,
+                },
+                contentChanges: [{ text }],
+              }),
+              3000, // 3 seconds timeout
+            ).catch((err) => log.warn("LSP notification timeout", { type: "didChange", error: err }))
             return
           }
 
           log.info("workspace/didChangeWatchedFiles", input)
-          await connection.sendNotification("workspace/didChangeWatchedFiles", {
-            changes: [
-              {
-                uri: pathToFileURL(input.path).href,
-                type: 1, // Created
-              },
-            ],
-          })
+          await withTimeout(
+            connection.sendNotification("workspace/didChangeWatchedFiles", {
+              changes: [
+                {
+                  uri: pathToFileURL(input.path).href,
+                  type: 1, // Created
+                },
+              ],
+            }),
+            3000, // 3 seconds timeout
+          ).catch((err) => log.warn("LSP notification timeout", { type: "didChangeWatchedFiles", error: err }))
 
           log.info("textDocument/didOpen", input)
           diagnostics.delete(input.path)
-          await connection.sendNotification("textDocument/didOpen", {
-            textDocument: {
-              uri: pathToFileURL(input.path).href,
-              languageId,
-              version: 0,
-              text,
-            },
-          })
+          await withTimeout(
+            connection.sendNotification("textDocument/didOpen", {
+              textDocument: {
+                uri: pathToFileURL(input.path).href,
+                languageId,
+                version: 0,
+                text,
+              },
+            }),
+            5000, // 5 seconds timeout for didOpen
+          ).catch((err) => log.warn("LSP notification timeout", { type: "didOpen", error: err }))
           files[input.path] = 0
           return
         },

@@ -12,6 +12,23 @@ import { Process } from "../util/process"
 export namespace BunProc {
   const log = Log.create({ service: "bun" })
 
+  // Timeout for network operations
+  const INSTALL_TIMEOUT = 60000 // 60 seconds for package installation
+  const VERSION_CHECK_TIMEOUT = 3000 // 3 seconds for version check
+
+  // File to persist pending updates across restarts
+  const pendingUpdatesPath = () => path.join(Global.Path.cache, "pending-updates.json")
+
+  async function getPendingUpdates(): Promise<Map<string, string>> {
+    const data = await Filesystem.readJson<Record<string, string>>(pendingUpdatesPath()).catch(() => ({}))
+    return new Map(Object.entries(data))
+  }
+
+  async function savePendingUpdates(updates: Map<string, string>): Promise<void> {
+    const data = Object.fromEntries(updates)
+    await Filesystem.writeJson(pendingUpdatesPath(), data).catch(() => {})
+  }
+
   export async function run(cmd: string[], options?: Process.RunOptions) {
     const full = [which(), ...cmd]
     log.info("running", {
@@ -50,6 +67,25 @@ export namespace BunProc {
     }),
   )
 
+  /**
+   * Check for updates in background. If an update is available,
+   * it will be installed on the next startup.
+   */
+  async function checkForUpdateInBackground(pkg: string, cachedVersion: string) {
+    // Use longer timeout for background check (10s)
+    const latestVersion = await PackageRegistry.info(pkg, "version", Global.Path.cache, 10000)
+    if (latestVersion && latestVersion !== cachedVersion) {
+      log.info("New version available, will update on next startup", {
+        pkg,
+        cachedVersion,
+        latestVersion,
+      })
+      const pending = await getPendingUpdates()
+      pending.set(pkg, latestVersion)
+      await savePendingUpdates(pending)
+    }
+  }
+
   export async function install(pkg: string, version = "latest", opts?: { ignoreScripts?: boolean }) {
     // Use lock to ensure only one install at a time
     using _ = await Lock.write("bun-install")
@@ -66,13 +102,41 @@ export namespace BunProc {
     const modExists = await Filesystem.exists(mod)
     const cachedVersion = dependencies[pkg]
 
-    if (!modExists || !cachedVersion) {
-      // continue to install
+    // Check if there's a pending update from previous background check
+    const pendingUpdates = await getPendingUpdates()
+    const pendingVersion = pendingUpdates.get(pkg)
+    if (pendingVersion && version === "latest") {
+      log.info("Installing pending update", { pkg, pendingVersion })
+      pendingUpdates.delete(pkg)
+      await savePendingUpdates(pendingUpdates)
+      // Proceed to install the pending update
+    } else if (!modExists || !cachedVersion) {
+      // No cache, must install
     } else if (version === "latest") {
-      if (!online()) return mod
-      const stale = await PackageRegistry.isOutdated(pkg, cachedVersion, Global.Path.cache)
-      if (!stale) return mod
-      log.info("Cached version is outdated, proceeding with install", { pkg, cachedVersion })
+      // Has cache, check for update
+      if (!online()) {
+        // Offline - use cache, skip background check
+        return mod
+      }
+
+      // Try quick version check (3s timeout)
+      const latestVersion = await PackageRegistry.info(pkg, "version", Global.Path.cache, VERSION_CHECK_TIMEOUT)
+      if (!latestVersion) {
+        // Network failed or timeout - use cache, check in background later
+        log.info("Version check failed or timed out, using cached version", { pkg, cachedVersion })
+        // Don't await - run in background
+        checkForUpdateInBackground(pkg, cachedVersion).catch(() => {})
+        return mod
+      }
+
+      // Compare versions
+      const semver = await import("semver")
+      if (!semver.lt(cachedVersion, latestVersion)) {
+        // Cache is up to date
+        return mod
+      }
+
+      log.info("Cached version is outdated, proceeding with install", { pkg, cachedVersion, latestVersion })
     } else if (cachedVersion === version) {
       return mod
     }
@@ -101,6 +165,7 @@ export namespace BunProc {
 
     await BunProc.run(args, {
       cwd: Global.Path.cache,
+      timeout: INSTALL_TIMEOUT,
     }).catch((e) => {
       throw new InstallFailedError(
         { pkg, version },

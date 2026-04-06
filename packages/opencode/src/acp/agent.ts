@@ -138,6 +138,7 @@ export namespace ACP {
     private sessionManager: ACPSessionManager
     private eventAbort = new AbortController()
     private eventStarted = false
+    private eventReconnectAttempts = 0
     private bashSnapshots = new Map<string, string>()
     private toolStarts = new Set<string>()
     private permissionQueues = new Map<string, Promise<void>>()
@@ -165,18 +166,49 @@ export namespace ACP {
     }
 
     private async runEventSubscription() {
+      const MAX_RECONNECT_ATTEMPTS = 10
+      const RECONNECT_DELAY_MS = 5000
+
       while (true) {
         if (this.eventAbort.signal.aborted) return
-        const events = await this.sdk.global.event({
-          signal: this.eventAbort.signal,
-        })
-        for await (const event of events.stream) {
-          if (this.eventAbort.signal.aborted) return
-          const payload = (event as any)?.payload
-          if (!payload) continue
-          await this.handleEvent(payload as Event).catch((error) => {
-            log.error("failed to handle event", { error, type: payload.type })
+
+        try {
+          const events = await this.sdk.global.event({
+            signal: this.eventAbort.signal,
           })
+
+          // Reset reconnect attempts on successful connection
+          this.eventReconnectAttempts = 0
+
+          for await (const event of events.stream) {
+            if (this.eventAbort.signal.aborted) return
+            const payload = (event as any)?.payload
+            if (!payload) continue
+            await this.handleEvent(payload as Event).catch((error) => {
+              log.error("failed to handle event", { error, type: payload.type })
+            })
+          }
+        } catch (error) {
+          if (this.eventAbort.signal.aborted) return
+
+          this.eventReconnectAttempts++
+
+          if (this.eventReconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            log.error("event subscription max reconnect attempts reached, stopping", {
+              attempts: this.eventReconnectAttempts,
+              error,
+            })
+            return
+          }
+
+          log.warn("event subscription failed, reconnecting", {
+            attempt: this.eventReconnectAttempts,
+            delay: RECONNECT_DELAY_MS,
+            error,
+          })
+
+          // Wait before reconnecting
+          await new Promise((resolve) => setTimeout(resolve, RECONNECT_DELAY_MS))
         }
       }
     }

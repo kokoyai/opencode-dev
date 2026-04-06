@@ -39,18 +39,31 @@ import { TaskTool } from "@/tool/task"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
+import { IdleTimeout } from "./idle-timeout"
 import { LLM } from "./llm"
 import { Shell } from "@/shell/shell"
 import { AppFileSystem } from "@/filesystem"
 import { Truncate } from "@/tool/truncate"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
-import { Cause, Effect, Exit, Layer, Option, Scope, ServiceMap } from "effect"
+import { Cause, Effect, Exit, Layer, Option, Scope, ServiceMap, Stream } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
+import * as EnsembleProcessor from "@/ensemble/processor"
+import { getEnsembleConfig } from "@/ensemble/config"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
+
+export function parseCheckResponse(output: string): { decision: "CONTINUE" | "DONE"; reason: string } {
+  const match = output.match(/(?:CONTINUE|DONE):\s*(.+)/i)
+  if (!match) {
+    return { decision: "DONE", reason: "Could not parse check agent response" }
+  }
+  const decision = output.toUpperCase().trimStart().startsWith("CONTINUE") ? "CONTINUE" : "DONE"
+  const reason = match[1].trim()
+  return { decision, reason }
+}
 
 const STRUCTURED_OUTPUT_DESCRIPTION = `Use this tool to return your final response in the requested structured format.
 
@@ -101,6 +114,49 @@ export namespace SessionPrompt {
       const cache = yield* InstanceState.make(
         Effect.fn("SessionPrompt.state")(function* () {
           const runners = new Map<string, Runner<MessageV2.WithParts>>()
+
+          // Subscribe to idle timeout events - when user is idle, auto-continue with check agent
+          yield* bus.subscribe(IdleTimeout.Event.Timeout).pipe(
+            Stream.runForEach((event) =>
+              Effect.gen(function* () {
+                const sessionID = event.properties.sessionID
+                log.info("idle timeout, auto-continuing session", { sessionID })
+
+                // Get session to find last user message context
+                const session = yield* sessions.get(sessionID)
+
+                // Get model from last user message
+                const model = yield* lastModel(sessionID)
+
+                // Create synthetic user message to trigger continuation
+                const userMsg: MessageV2.User = {
+                  id: MessageID.ascending(),
+                  sessionID,
+                  time: { created: Date.now() },
+                  role: "user",
+                  agent: "check",
+                  model: { providerID: model.providerID, modelID: model.modelID },
+                }
+                yield* sessions.updateMessage(userMsg)
+
+                const userPart: MessageV2.Part = {
+                  type: "text",
+                  id: PartID.ascending(),
+                  messageID: userMsg.id,
+                  sessionID,
+                  text: "[IDLE TIMEOUT] User has been idle for 2 minutes. Check if work can continue without user input. If yes, continue working. If user input is truly required, respond with what you need.",
+                  synthetic: true,
+                }
+                yield* sessions.updatePart(userPart)
+
+                // Trigger the loop to continue
+                const runner = getRunner(runners, sessionID)
+                yield* runner.ensureRunning(runLoop(sessionID))
+              }),
+            ),
+            Effect.forkScoped,
+          )
+
           yield* Effect.addFinalizer(
             Effect.fnUntraced(function* () {
               yield* Effect.forEach(runners.values(), (r) => r.cancel, { concurrency: "unbounded", discard: true })
@@ -1722,6 +1778,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         Layer.provide(SessionStatus.layer),
         Layer.provide(SessionCompaction.defaultLayer),
         Layer.provide(SessionProcessor.defaultLayer),
+        Layer.provide(EnsembleProcessor.defaultLayer),
         Layer.provide(Command.defaultLayer),
         Layer.provide(Permission.layer),
         Layer.provide(MCP.defaultLayer),

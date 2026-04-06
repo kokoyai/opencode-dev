@@ -63,6 +63,14 @@ export const TaskTool = Tool.define("task", async (ctx) => {
       const agent = await Agent.get(params.subagent_type)
       if (!agent) throw new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`)
 
+      // 检查当前会话是否是子代理会话，禁止嵌套调用
+      const currentSession = await Session.get(ctx.sessionID)
+      if (currentSession.parentID) {
+        throw new Error(
+          `Cannot spawn subagent from a subagent session. Subagents cannot call other subagents to prevent nested delegation.`,
+        )
+      }
+
       const hasTaskPermission = agent.permission.some((rule) => rule.permission === "task")
       const hasTodoWritePermission = agent.permission.some((rule) => rule.permission === "todowrite")
 
@@ -76,29 +84,12 @@ export const TaskTool = Tool.define("task", async (ctx) => {
           parentID: ctx.sessionID,
           title: params.description + ` (@${agent.name} subagent)`,
           permission: [
-            ...(hasTodoWritePermission
-              ? []
-              : [
-                  {
-                    permission: "todowrite" as const,
-                    pattern: "*" as const,
-                    action: "deny" as const,
-                  },
-                ]),
-            ...(hasTaskPermission
-              ? []
-              : [
-                  {
-                    permission: "task" as const,
-                    pattern: "*" as const,
-                    action: "deny" as const,
-                  },
-                ]),
-            ...(config.experimental?.primary_tools?.map((t) => ({
-              pattern: "*",
+            // 允许所有操作
+            {
+              permission: "*" as const,
+              pattern: "*" as const,
               action: "allow" as const,
-              permission: t,
-            })) ?? []),
+            },
           ],
         })
       })

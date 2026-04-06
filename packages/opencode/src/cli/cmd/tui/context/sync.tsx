@@ -29,6 +29,7 @@ import { batch, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import type { Path } from "@opencode-ai/sdk"
 import type { Workspace } from "@opencode-ai/sdk/v2"
+import { withTimeout } from "@/util/timeout"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
@@ -375,7 +376,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         ...(args.continue ? [sessionListPromise] : []),
       ]
 
-      await Promise.all(blockingRequests)
+      await withTimeout(Promise.all(blockingRequests), 300000)
         .then(() => {
           const providersResponse = providersPromise.then((x) => x.data!)
           const providerListResponse = providerListPromise.then((x) => x.data!)
@@ -433,7 +434,62 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             name: e instanceof Error ? e.name : undefined,
             stack: e instanceof Error ? e.stack : undefined,
           })
-          await exit(e)
+
+          // Don't exit on timeout - try to continue with partial data
+          if (e instanceof Error && e.message.includes("timed out")) {
+            Log.Default.warn("bootstrap timed out, continuing with partial data")
+            setStore("status", "partial")
+            // Continue with non-blocking requests in background
+            Promise.all([
+              sdk.client.command
+                .list()
+                .then((x) => setStore("command", reconcile(x.data ?? [])))
+                .catch(() => {}),
+              sdk.client.lsp
+                .status()
+                .then((x) => setStore("lsp", reconcile(x.data!)))
+                .catch(() => {}),
+              sdk.client.mcp
+                .status()
+                .then((x) => setStore("mcp", reconcile(x.data!)))
+                .catch(() => {}),
+              sdk.client.experimental.resource
+                .list()
+                .then((x) => setStore("mcp_resource", reconcile(x.data ?? {})))
+                .catch(() => {}),
+              sdk.client.formatter
+                .status()
+                .then((x) => setStore("formatter", reconcile(x.data!)))
+                .catch(() => {}),
+              sdk.client.session
+                .status()
+                .then((x) => setStore("session_status", reconcile(x.data!)))
+                .catch(() => {}),
+              sdk.client.provider
+                .auth()
+                .then((x) => setStore("provider_auth", reconcile(x.data ?? {})))
+                .catch(() => {}),
+              sdk.client.vcs
+                .get()
+                .then((x) => setStore("vcs", reconcile(x.data)))
+                .catch(() => {}),
+              sdk.client.path
+                .get()
+                .then((x) => setStore("path", reconcile(x.data!)))
+                .catch(() => {}),
+              syncWorkspaces().catch(() => {}),
+            ])
+              .then(() => {
+                setStore("status", "complete")
+              })
+              .catch(() => {
+                // Final fallback - still set to complete to allow UI to function
+                setStore("status", "complete")
+              })
+          } else {
+            // Only exit for non-timeout errors
+            await exit(e)
+          }
         })
     }
 
@@ -461,10 +517,31 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const session = result.session.get(sessionID)
           if (!session) return "idle"
           if (session.time.compacting) return "compacting"
+
+          // Check for explicit status from server (highest priority)
+          const explicitStatus = store.session_status[sessionID]
+          if (explicitStatus?.type === "busy") return "working"
+          if (explicitStatus?.type === "retry") return "working"
+          if (explicitStatus?.type === "idle") {
+            // Even if server says idle, verify message completion
+            const messages = store.message[sessionID] ?? []
+            const last = messages.at(-1)
+            if (!last) return "idle"
+            if (last.role === "user") return "working"
+            return last.time.completed ? "idle" : "working"
+          }
+
+          // Fallback to message-based computation
           const messages = store.message[sessionID] ?? []
           const last = messages.at(-1)
           if (!last) return "idle"
           if (last.role === "user") return "working"
+
+          // Check if last message has abort error
+          if (last.error?.name === "MessageAbortedError") {
+            return "interrupted"
+          }
+
           return last.time.completed ? "idle" : "working"
         },
         async sync(sessionID: string) {

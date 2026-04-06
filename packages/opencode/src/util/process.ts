@@ -70,6 +70,7 @@ export namespace Process {
 
     let closed = false
     let timer: ReturnType<typeof setTimeout> | undefined
+    let killTimer: ReturnType<typeof setTimeout> | undefined
 
     const abort = () => {
       if (closed) return
@@ -83,10 +84,20 @@ export namespace Process {
       timer = setTimeout(() => proc.kill("SIGKILL"), ms)
     }
 
+    // Auto-kill process if timeout is specified
+    if (opts.timeout && opts.timeout > 0) {
+      killTimer = setTimeout(() => {
+        if (closed) return
+        if (proc.exitCode !== null || proc.signalCode !== null) return
+        proc.kill("SIGKILL")
+      }, opts.timeout)
+    }
+
     const exited = new Promise<number>((resolve, reject) => {
       const done = () => {
         opts.abort?.removeEventListener("abort", abort)
         if (timer) clearTimeout(timer)
+        if (killTimer) clearTimeout(killTimer)
       }
 
       proc.once("exit", (code, signal) => {

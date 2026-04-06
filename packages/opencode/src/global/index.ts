@@ -11,44 +11,80 @@ const cache = path.join(xdgCache!, app)
 const config = path.join(xdgConfig!, app)
 const state = path.join(xdgState!, app)
 
-export namespace Global {
-  export const Path = {
-    // Allow override via OPENCODE_TEST_HOME for test isolation
-    get home() {
-      return process.env.OPENCODE_TEST_HOME || os.homedir()
-    },
-    data,
-    bin: path.join(cache, "bin"),
-    log: path.join(data, "log"),
-    cache,
-    config,
-    state,
+const CACHE_VERSION = "21"
+
+let initPromise: Promise<void> | null = null
+let initialized = false
+
+function ensureInit() {
+  if (!initPromise) {
+    initPromise = (async () => {
+      await Promise.all([
+        fs.mkdir(data, { recursive: true }),
+        fs.mkdir(config, { recursive: true }),
+        fs.mkdir(state, { recursive: true }),
+        fs.mkdir(path.join(data, "log"), { recursive: true }),
+        fs.mkdir(path.join(cache, "bin"), { recursive: true }),
+      ])
+
+      const version = await Filesystem.readText(path.join(cache, "version")).catch(() => "0")
+
+      if (version !== CACHE_VERSION) {
+        try {
+          const contents = await fs.readdir(cache)
+          await Promise.all(
+            contents.map((item) =>
+              fs.rm(path.join(cache, item), {
+                recursive: true,
+                force: true,
+              }),
+            ),
+          )
+        } catch (e) {}
+        await Filesystem.write(path.join(cache, "version"), CACHE_VERSION)
+      }
+    })()
+  }
+  return initPromise
+}
+
+function triggerInit() {
+  if (!initialized) {
+    initialized = true
+    ensureInit().catch(() => {})
   }
 }
 
-await Promise.all([
-  fs.mkdir(Global.Path.data, { recursive: true }),
-  fs.mkdir(Global.Path.config, { recursive: true }),
-  fs.mkdir(Global.Path.state, { recursive: true }),
-  fs.mkdir(Global.Path.log, { recursive: true }),
-  fs.mkdir(Global.Path.bin, { recursive: true }),
-])
+export namespace Global {
+  export const Path = {
+    get home() {
+      return process.env.OPENCODE_TEST_HOME || os.homedir()
+    },
+    get data() {
+      triggerInit()
+      return data
+    },
+    get bin() {
+      triggerInit()
+      return path.join(cache, "bin")
+    },
+    get log() {
+      triggerInit()
+      return path.join(data, "log")
+    },
+    get cache() {
+      triggerInit()
+      return cache
+    },
+    get config() {
+      triggerInit()
+      return config
+    },
+    get state() {
+      triggerInit()
+      return state
+    },
+  }
 
-const CACHE_VERSION = "21"
-
-const version = await Filesystem.readText(path.join(Global.Path.cache, "version")).catch(() => "0")
-
-if (version !== CACHE_VERSION) {
-  try {
-    const contents = await fs.readdir(Global.Path.cache)
-    await Promise.all(
-      contents.map((item) =>
-        fs.rm(path.join(Global.Path.cache, item), {
-          recursive: true,
-          force: true,
-        }),
-      ),
-    )
-  } catch (e) {}
-  await Filesystem.write(path.join(Global.Path.cache, "version"), CACHE_VERSION)
+  export const init = ensureInit
 }

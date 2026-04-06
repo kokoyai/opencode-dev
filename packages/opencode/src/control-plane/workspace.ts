@@ -121,12 +121,41 @@ export namespace Workspace {
         await sleep(1000)
         continue
       }
-      await parseSSE(res.body, stop, (event) => {
-        GlobalBus.emit("event", {
-          directory: space.id,
-          payload: event,
-        })
-      })
+      try {
+        await parseSSE(
+          res.body,
+          stop,
+          (event) => {
+            GlobalBus.emit("event", {
+              directory: space.id,
+              payload: event,
+            })
+          },
+          {
+            // 5-minute timeout, but continue on timeout
+            timeoutMs: 300000,
+            onTimeout: () => {
+              log.info("SSE connection timed out, reconnecting", { workspaceID: space.id })
+              return true // Continue (will reconnect)
+            },
+            onError: (error) => {
+              log.warn("SSE connection error, reconnecting", {
+                workspaceID: space.id,
+                error: error.message,
+              })
+              return true // Continue (will reconnect)
+            },
+          },
+        )
+      } catch (error) {
+        // Only log if it's not an abort
+        if (!stop.aborted && error instanceof Error && error.name !== "AbortError") {
+          log.warn("workspace sync listener error, will retry", {
+            workspaceID: space.id,
+            error: error.message,
+          })
+        }
+      }
       // Wait 250ms and retry if SSE connection fails
       await sleep(250)
     }

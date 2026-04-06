@@ -4,6 +4,7 @@ import { SyncEvent } from "@/sync"
 import { Session } from "@/session"
 import { SessionTable } from "@/session/session.sql"
 import { Database, eq } from "@/storage/db"
+import { NotificationHandler } from "@/notification"
 
 export function initProjectors() {
   SyncEvent.init({
@@ -23,6 +24,7 @@ export function initProjectors() {
       return data
     },
   })
-}
 
-initProjectors()
+  // Initialize notification handlers
+  NotificationHandler.start()
+}

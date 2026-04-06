@@ -35,6 +35,7 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
+import { showRandomMeme } from "../random-meme"
 
 export type PromptProps = {
   sessionID?: string
@@ -111,11 +112,29 @@ export function Prompt(props: PromptProps) {
   const pasteStyleId = syntax().getStyleId("extmark.paste")!
   let promptPartTypeId = 0
 
+  // Track setTimeout timers for cleanup
+  const timers = new Set<ReturnType<typeof setTimeout>>()
+
+  const safeSetTimeout = (fn: () => void, delay: number) => {
+    const id = setTimeout(() => {
+      timers.delete(id)
+      fn()
+    }, delay)
+    timers.add(id)
+    return id
+  }
+
+  onCleanup(() => {
+    for (const id of timers) {
+      clearTimeout(id)
+    }
+    timers.clear()
+  })
+
   sdk.event.on(TuiEvent.PromptAppend.type, (evt) => {
     if (!input || input.isDestroyed) return
     input.insertText(evt.properties.text)
-    setTimeout(() => {
-      // setTimeout is a workaround and needs to be addressed properly
+    safeSetTimeout(() => {
       if (!input || input.isDestroyed) return
       input.getLayoutNode().markDirty()
       input.gotoBufferEnd()
@@ -160,6 +179,7 @@ export function Prompt(props: PromptProps) {
     extmarkToPartIndex: Map<number, number>
     interrupt: number
     placeholder: number
+    exitCount: number
   }>({
     placeholder: randomIndex(list().length),
     prompt: {
@@ -169,6 +189,7 @@ export function Prompt(props: PromptProps) {
     mode: "normal",
     extmarkToPartIndex: new Map(),
     interrupt: 0,
+    exitCount: 0,
   })
 
   createEffect(
@@ -263,7 +284,7 @@ export function Prompt(props: PromptProps) {
 
           setStore("interrupt", store.interrupt + 1)
 
-          setTimeout(() => {
+          safeSetTimeout(() => {
             setStore("interrupt", 0)
           }, 5000)
 
@@ -272,6 +293,13 @@ export function Prompt(props: PromptProps) {
               sessionID: props.sessionID,
             })
             setStore("interrupt", 0)
+          } else {
+            // Show toast on first ESC press
+            toast.show({
+              variant: "warning",
+              message: "Press ESC again within 5s to interrupt",
+              duration: 5000,
+            })
           }
           dialog.clear()
         },
@@ -707,9 +735,12 @@ export function Prompt(props: PromptProps) {
     setStore("extmarkToPartIndex", new Map())
     props.onSubmit?.()
 
+    // 显示随机表情包
+    showRandomMeme().catch(() => {})
+
     // temporary hack to make sure the message is sent
     if (!props.sessionID)
-      setTimeout(() => {
+      safeSetTimeout(() => {
         route.navigate({
           type: "session",
           sessionID,
@@ -817,7 +848,7 @@ export function Prompt(props: PromptProps) {
       return `Run a command... "${example}"`
     }
     if (!list().length) return undefined
-    return `Ask anything... "${list()[store.placeholder % list().length]}"`
+    return `mw 自用... "${list()[store.placeholder % list().length]}"`
   })
 
   const spinnerDef = createMemo(() => {
@@ -926,11 +957,24 @@ export function Prompt(props: PromptProps) {
                 }
                 if (keybind.match("app_exit", e)) {
                   if (store.prompt.input === "") {
-                    await exit()
-                    // Don't preventDefault - let textarea potentially handle the event
+                    if (store.exitCount < 2) {
+                      const remaining = 2 - store.exitCount
+                      toast.show({
+                        variant: "warning",
+                        message: `再按 ${remaining} 次退出`,
+                        duration: 2000,
+                      })
+                      setStore("exitCount", store.exitCount + 1)
+                    } else {
+                      await exit()
+                    }
                     e.preventDefault()
                     return
                   }
+                }
+                // Reset exit count on any other key
+                if (store.exitCount > 0) {
+                  setStore("exitCount", 0)
                 }
                 if (e.name === "!" && input.visualCursor.offset === 0) {
                   setStore("placeholder", randomIndex(shell().length))
@@ -1036,8 +1080,7 @@ export function Prompt(props: PromptProps) {
                 }
 
                 // Force layout update and render for the pasted content
-                setTimeout(() => {
-                  // setTimeout is a workaround and needs to be addressed properly
+                safeSetTimeout(() => {
                   if (!input || input.isDestroyed) return
                   input.getLayoutNode().markDirty()
                   renderer.requestRender()
@@ -1049,8 +1092,7 @@ export function Prompt(props: PromptProps) {
                   promptPartTypeId = input.extmarks.registerType("prompt-part")
                 }
                 props.ref?.(ref)
-                setTimeout(() => {
-                  // setTimeout is a workaround and needs to be addressed properly
+                safeSetTimeout(() => {
                   if (!input || input.isDestroyed) return
                   input.cursorColor = theme.text
                 }, 0)

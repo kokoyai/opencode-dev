@@ -32,7 +32,7 @@ import * as CrossSpawnSpawner from "@/effect/cross-spawn-spawner"
 
 export namespace MCP {
   const log = Log.create({ service: "mcp" })
-  const DEFAULT_TIMEOUT = 30_000
+  const DEFAULT_TIMEOUT = 60_000 // 60 seconds for MCP operations
 
   export const Resource = z
     .object({
@@ -145,17 +145,26 @@ export namespace MCP {
       description: mcpTool.description ?? "",
       inputSchema: jsonSchema(schema),
       execute: async (args: unknown) => {
-        return client.callTool(
-          {
-            name: mcpTool.name,
-            arguments: (args || {}) as Record<string, unknown>,
-          },
-          CallToolResultSchema,
-          {
-            resetTimeoutOnProgress: true,
-            timeout,
-          },
-        )
+        try {
+          return await client.callTool(
+            {
+              name: mcpTool.name,
+              arguments: (args || {}) as Record<string, unknown>,
+            },
+            CallToolResultSchema,
+            {
+              resetTimeoutOnProgress: true,
+              timeout,
+            },
+          )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          log.error("mcp tool execution failed", { tool: mcpTool.name, error: message })
+          return {
+            content: [{ type: "text" as const, text: `Error: ${message}` }],
+            isError: true,
+          }
+        }
       },
     })
   }
@@ -442,7 +451,22 @@ export namespace MCP {
           if (process.platform === "win32") return [] as number[]
           const pids: number[] = []
           const queue = [pid]
+
+          // Add safety limit to prevent infinite loops
+          const MAX_PROCESSES = 1000
+          let iterations = 0
+
           while (queue.length > 0) {
+            // Check iteration limit
+            if (++iterations > MAX_PROCESSES) {
+              log.warn("Max process tree depth reached, stopping traversal", {
+                pid,
+                iterations,
+                max: MAX_PROCESSES,
+              })
+              break
+            }
+
             const current = queue.shift()!
             const handle = yield* spawner.spawn(
               ChildProcess.make("pgrep", ["-P", String(current)], { stdin: "ignore" }),

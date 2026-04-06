@@ -194,8 +194,16 @@ export namespace Project {
             }
           }
 
-          const commonDir = yield* git(["rev-parse", "--git-common-dir"], { cwd: sandbox })
-          if (commonDir.code !== 0) {
+          // Parallel git calls: get common-dir and toplevel at once
+          const [commonDirResult, topLevelResult] = yield* Effect.all(
+            [
+              git(["rev-parse", "--git-common-dir"], { cwd: sandbox }),
+              git(["rev-parse", "--show-toplevel"], { cwd: sandbox }),
+            ],
+            { concurrency: 2 },
+          )
+
+          if (commonDirResult.code !== 0) {
             return {
               id: id ?? ProjectID.global,
               worktree: sandbox,
@@ -204,7 +212,7 @@ export namespace Project {
             }
           }
           const worktree = (() => {
-            const common = resolveGitPath(sandbox, commonDir.text.trim())
+            const common = resolveGitPath(sandbox, commonDirResult.text.trim())
             return common === sandbox ? sandbox : pathSvc.dirname(common)
           })()
 
@@ -230,8 +238,8 @@ export namespace Project {
             return { id: ProjectID.global, worktree: sandbox, sandbox, vcs: "git" as const }
           }
 
-          const topLevel = yield* git(["rev-parse", "--show-toplevel"], { cwd: sandbox })
-          if (topLevel.code !== 0) {
+          // Use the toplevel we already fetched in parallel
+          if (topLevelResult.code !== 0) {
             return {
               id,
               worktree: sandbox,
@@ -239,7 +247,7 @@ export namespace Project {
               vcs: fakeVcs,
             }
           }
-          sandbox = resolveGitPath(sandbox, topLevel.text.trim())
+          sandbox = resolveGitPath(sandbox, topLevelResult.text.trim())
 
           return { id, sandbox, worktree, vcs: "git" as const }
         })

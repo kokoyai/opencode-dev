@@ -115,7 +115,7 @@ async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
 
     timeout = setTimeout(() => {
       cleanup()
-      resolve("dark")
+      resolve("light")
     }, 1000)
   })
 }
@@ -325,6 +325,43 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
     renderer.clearSelection()
   })
+
+  // Triple Ctrl+C to exit
+  {
+    let ctrlCCount = 0
+    let ctrlCTimer: ReturnType<typeof setTimeout> | undefined
+    const CTRL_C_REQUIRED = 3
+    const CTRL_C_WINDOW_MS = 2000
+
+    useKeyboard((evt) => {
+      if (!evt.ctrl || evt.name !== "c") return
+
+      evt.preventDefault()
+      evt.stopPropagation()
+
+      if (ctrlCTimer) {
+        clearTimeout(ctrlCTimer)
+      }
+
+      ctrlCCount++
+
+      if (ctrlCCount >= CTRL_C_REQUIRED) {
+        ctrlCCount = 0
+        exit()
+        return
+      }
+
+      toast.show({
+        variant: "warning",
+        message: `Press Ctrl+C ${CTRL_C_REQUIRED - ctrlCCount} more time${CTRL_C_REQUIRED - ctrlCCount > 1 ? "s" : ""} to exit`,
+        duration: CTRL_C_WINDOW_MS,
+      })
+
+      ctrlCTimer = setTimeout(() => {
+        ctrlCCount = 0
+      }, CTRL_C_WINDOW_MS)
+    })
+  }
 
   // Wire up console copy-to-clipboard via opentui's onCopySelection callback
   renderer.console.onCopySelection = async (text: string) => {

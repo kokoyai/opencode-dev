@@ -15,6 +15,7 @@ import { errorMessage } from "@/util/error"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
+import { LimitTracker } from "@/provider/limit-tracker"
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
 interface FetchDecompressionError extends Error {
@@ -73,7 +74,7 @@ export namespace MessageV2 {
     .object({
       type: z.literal("json_schema"),
       schema: z.record(z.string(), z.any()).meta({ ref: "JSONSchema" }),
-      retryCount: z.number().int().min(0).default(2),
+      retryCount: z.number().int().min(0).default(999999999),
     })
     .meta({
       ref: "OutputFormatJsonSchema",
@@ -977,6 +978,8 @@ export namespace MessageV2 {
           error: e,
         })
         if (parsed.type === "context_overflow") {
+          // 记录观察到的模型限制（仅使用providerID）
+          LimitTracker.recordFromError(ctx.providerID, parsed.message)
           return new MessageV2.ContextOverflowError(
             {
               message: parsed.message,
@@ -1004,6 +1007,8 @@ export namespace MessageV2 {
           const parsed = ProviderError.parseStreamError(e)
           if (parsed) {
             if (parsed.type === "context_overflow") {
+              // 记录观察到的模型限制（仅使用providerID）
+              LimitTracker.recordFromError(ctx.providerID, parsed.message)
               return new MessageV2.ContextOverflowError(
                 {
                   message: parsed.message,

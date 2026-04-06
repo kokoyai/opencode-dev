@@ -108,7 +108,10 @@ const startEventStream = (input: { directory: string; workspaceID?: string }) =>
   })
 }
 
-startEventStream({ directory: process.cwd() })
+// Defer event stream start to next tick to allow RPC listener to be ready
+setTimeout(() => {
+  startEventStream({ directory: process.cwd() })
+}, 0)
 
 export const rpc = {
   async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {

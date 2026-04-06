@@ -1,0 +1,398 @@
+import { Effect, Stream, Deferred, Fiber } from "effect"
+import { LLM } from "@/session/llm"
+import { Provider } from "@/provider/provider"
+import { getEnsembleConfigEffect, type EnsembleConfig } from "./config"
+import { Log } from "@/util/log"
+import type { EnsembleEvent, ModelOutput } from "./types"
+import { ModelID, ProviderID } from "../provider/schema"
+
+const log = Log.create({ service: "ensemble.stream" })
+
+/**
+ * Parallel stream invocation with two models
+ * Events from both models are interleaved as they arrive
+ */
+export function parallelStream(
+  input: LLM.StreamInput,
+): Stream.Stream<EnsembleEvent, never, LLM.Service | Provider.Service> {
+  return Stream.unwrap(
+    Effect.gen(function* () {
+      const config = yield* getEnsembleConfigEffect()
+
+      if (!config.enabled) {
+        // Ensemble disabled: use single model
+        log.debug("Ensemble disabled, using single model")
+        const llm = yield* LLM.Service
+        return llm.stream(input).pipe(
+          Stream.map(
+            (event): EnsembleEvent => ({
+              source: "modelA",
+              event,
+            }),
+          ),
+          Stream.catchCause(() => Stream.empty),
+        )
+      }
+
+      log.info("Starting parallel dual model stream", {
+        modelA: config.models[0],
+        modelB: config.models[1],
+      })
+
+      const llm = yield* LLM.Service
+      const provider = yield* Provider.Service
+
+      // Resolve both models
+      const [modelA, modelB] = yield* Effect.all([
+        resolveModel(provider, config.models[0], input.model.providerID),
+        resolveModel(provider, config.models[1], input.model.providerID),
+      ])
+
+      log.info("Models resolved for parallel stream", {
+        modelA: modelA.id,
+        modelB: modelB.id,
+      })
+
+      // Create inputs for both models
+      const inputA: LLM.StreamInput = { ...input, model: modelA }
+      const inputB: LLM.StreamInput = { ...input, model: modelB }
+
+      // Create streams for both models
+      const streamA = llm.stream(inputA).pipe(
+        Stream.map(
+          (event): EnsembleEvent => ({
+            source: "modelA",
+            event,
+          }),
+        ),
+        Stream.catchCause((cause) => {
+          log.warn("Model A stream error", { cause: String(cause) })
+          return Stream.empty
+        }),
+      )
+
+      const streamB = llm.stream(inputB).pipe(
+        Stream.map(
+          (event): EnsembleEvent => ({
+            source: "modelB",
+            event,
+          }),
+        ),
+        Stream.catchCause((cause) => {
+          log.warn("Model B stream error", { cause: String(cause) })
+          return Stream.empty
+        }),
+      )
+
+      // Merge both streams - events arrive interleaved as they happen
+      return Stream.mergeAll([streamA, streamB], { concurrency: 2 })
+    }),
+  )
+}
+
+/**
+ * Collect model output into a synchronous result
+ * Used for non-streaming ensemble processing
+ */
+export function collectModelOutput(
+  input: LLM.StreamInput,
+  source: "modelA" | "modelB",
+): Effect.Effect<ModelOutput, never, LLM.Service> {
+  return Effect.gen(function* () {
+    const llm = yield* LLM.Service
+    const stream = llm.stream(input)
+
+    let text = ""
+    const toolCalls: ModelOutput["toolCalls"] = []
+    let reasoning = ""
+
+    yield* Stream.runForEach(stream, (event) => {
+      if (event.type === "text-delta") {
+        text += event.text
+      } else if (event.type === "reasoning-delta") {
+        reasoning += event.text
+      } else if (event.type === "tool-call") {
+        toolCalls.push({
+          toolName: event.toolName,
+          input: event.input,
+          toolCallId: event.toolCallId,
+        })
+      }
+
+      return Effect.void
+    }).pipe(Effect.orDie)
+
+    log.debug(`Model ${source} output collected`, {
+      textLength: text.length,
+      toolCallsCount: toolCalls.length,
+    })
+
+    return {
+      text,
+      toolCalls,
+      reasoning: reasoning.length > 0 ? reasoning : undefined,
+    }
+  })
+}
+
+      // Extract tool calls from ensemble events, separated by source model
+      export function extractToolCalls(events: EnsembleEvent[]): {
+        callsA: Array<{ toolCallId: string; toolName: string; input: any }>
+        callsB: Array<{ toolCallId: string; toolName: string; input: any }>
+      } {
+        const callsA: Array<{ toolCallId: string; toolName: string; input: any }> = []
+        const callsB: Array<{ toolCallId: string; toolName: string; input: any }> = []
+
+        for (const event of events) {
+          if (event.event.type === "tool-call") {
+            const call = {
+              toolCallId: event.event.toolCallId,
+              toolName: event.event.toolName,
+              input: event.event.input,
+            }
+            if (event.source === "modelA") {
+              callsA.push(call)
+            } else {
+              callsB.push(call)
+            }
+          }
+        }
+
+        return { callsA, callsB }
+      }
+
+      // Merge tool calls from both models, detecting duplicates and conflicts
+      export function mergeToolCalls(
+        callsA: Array<{ toolCallId: string; toolName: string; input: any }>,
+        callsB: Array<{ toolCallId: string; toolName: string; input: any }>,
+      ): Effect.Effect<
+        {
+          merged: Array<{ toolCallId: string; toolName: string; input: any; source: "modelA" | "modelB" | "both" }>
+          conflicts: Array<{ toolName: string; inputA: any; inputB: any }>
+        },
+        never,
+        never
+      > {
+        return Effect.gen(function* () {
+          const merged: Array<{
+            toolCallId: string
+            toolName: string
+            input: any
+            source: "modelA" | "modelB" | "both"
+          }> = []
+          const conflicts: Array<{ toolName: string; inputA: any; inputB: any }> = []
+
+          // Create maps for quick lookup by tool name
+          const mapA = new Map(callsA.map((c) => [c.toolName, c]))
+          const mapB = new Map(callsB.map((c) => [c.toolName, c]))
+
+          // Find all unique tool names
+          const allToolNames = new Set([...mapA.keys(), ...mapB.keys()])
+
+          for (const toolName of allToolNames) {
+            const callA = mapA.get(toolName)
+            const callB = mapB.get(toolName)
+
+            if (callA && callB) {
+              // Both models called the same tool
+              // Check if inputs are identical
+              if (JSON.stringify(callA.input) === JSON.stringify(callB.input)) {
+                // Same tool with same input - use one
+                merged.push({ ...callA, source: "both" })
+              } else {
+                // Same tool with different inputs - conflict
+                conflicts.push({
+                  toolName,
+                  inputA: callA.input,
+                  inputB: callB.input,
+                })
+                // Default to modelA's version in merged
+                merged.push({ ...callA, source: "modelA" })
+              }
+            } else if (callA) {
+              // Only modelA called this tool
+              merged.push({ ...callA, source: "modelA" })
+            } else if (callB) {
+              // Only modelB called this tool
+              merged.push({ ...callB, source: "modelB" })
+            }
+          }
+
+          return { merged, conflicts }
+        })
+      }
+      return Effect.void
+    }).pipe(Effect.orDie)
+
+    log.debug(`Model ${source} output collected`, {
+      textLength: text.length,
+      toolCallsCount: toolCalls.length,
+    })
+
+    return {
+      text,
+      toolCalls,
+      reasoning: reasoning.length > 0 ? reasoning : undefined,
+    }
+  })
+}
+
+/**
+ * Run both models in parallel and collect their outputs
+ */
+export function collectBothModels(
+  input: LLM.StreamInput,
+  config: EnsembleConfig,
+): Effect.Effect<{ outputA: ModelOutput; outputB: ModelOutput }, never, LLM.Service | Provider.Service> {
+  return Effect.gen(function* () {
+    const provider = yield* Provider.Service
+
+    // Resolve both models
+    const [modelA, modelB] = yield* Effect.all([
+      resolveModel(provider, config.models[0], input.model.providerID),
+      resolveModel(provider, config.models[1], input.model.providerID),
+    ])
+
+    // Create inputs for both models
+    const inputA: LLM.StreamInput = { ...input, model: modelA }
+    const inputB: LLM.StreamInput = { ...input, model: modelB }
+
+    // Run both models in parallel
+    const [outputA, outputB] = yield* Effect.all(
+      [collectModelOutput(inputA, "modelA"), collectModelOutput(inputB, "modelB")],
+      { concurrency: 2 },
+    )
+
+    log.info("Both models collected", {
+      textLengthA: outputA.text.length,
+      textLengthB: outputB.text.length,
+      toolCallsA: outputA.toolCalls.length,
+      toolCallsB: outputB.toolCalls.length,
+    })
+
+    return { outputA, outputB }
+  })
+}
+
+// Resolve model from provider
+function resolveModel(
+  provider: Provider.Interface,
+  modelID: string,
+  fallbackProviderID: string,
+): Effect.Effect<Provider.Model, Error, never> {
+  return Effect.gen(function* () {
+    if (modelID.includes("/")) {
+      const parsed = Provider.parseModel(modelID)
+      const p = yield* provider.getProvider(parsed.providerID)
+      const model = p.models[parsed.modelID]
+      if (!model) {
+        return yield* Effect.fail(new Error(`Model not found: ${modelID}`))
+      }
+      return model
+    }
+
+    const providers = yield* provider.list()
+
+    // Try to find in all providers
+    for (const p of Object.values(providers)) {
+      const model = p.models[modelID]
+      if (model) {
+        return model
+      }
+    }
+
+    // Try fallback provider
+    const fallbackProviderID_branded = ProviderID.make(fallbackProviderID)
+    const fallback = providers[fallbackProviderID_branded]
+    if (fallback) {
+      const model = fallback.models[modelID]
+      if (model) {
+        return model
+      }
+    }
+
+    return yield* Effect.fail(new Error(`Model not found: ${modelID}`))
+  })
+}
+
+// Extract tool calls from ensemble events, separated by source model
+export function extractToolCalls(events: EnsembleEvent[]): {
+  callsA: Array<{ toolCallId: string; toolName: string; input: any }>
+  callsB: Array<{ toolCallId: string; toolName: string; input: any }>
+} {
+  const callsA: Array<{ toolCallId: string; toolName: string; input: any }> = []
+  const callsB: Array<{ toolCallId: string; toolName: string; input: any }> = []
+
+  for (const event of events) {
+    if (event.event.type === "tool-call") {
+      const call = {
+        toolCallId: event.event.toolCallId,
+        toolName: event.event.toolName,
+        input: event.event.input,
+      }
+      if (event.source === "modelA") {
+        callsA.push(call)
+      } else {
+        callsB.push(call)
+      }
+    }
+  }
+
+  return { callsA, callsB }
+}
+
+// Merge tool calls from both models, detecting duplicates and conflicts
+export function mergeToolCalls(
+  callsA: Array<{ toolCallId: string; toolName: string; input: any }>,
+  callsB: Array<{ toolCallId: string; toolName: string; input: any }>,
+): Effect.Effect<
+  {
+    merged: Array<{ toolCallId: string; toolName: string; input: any; source: "modelA" | "modelB" | "both" }>
+    conflicts: Array<{ toolName: string; inputA: any; inputB: any }>
+  },
+  never,
+  never
+> {
+  return Effect.gen(function* () {
+    const merged: Array<{ toolCallId: string; toolName: string; input: any; source: "modelA" | "modelB" | "both" }> = []
+    const conflicts: Array<{ toolName: string; inputA: any; inputB: any }> = []
+
+    // Create maps for quick lookup by tool name
+    const mapA = new Map(callsA.map((c) => [c.toolName, c]))
+    const mapB = new Map(callsB.map((c) => [c.toolName, c]))
+
+    // Find all unique tool names
+    const allToolNames = new Set([...mapA.keys(), ...mapB.keys()])
+
+    for (const toolName of allToolNames) {
+      const callA = mapA.get(toolName)
+      const callB = mapB.get(toolName)
+
+      if (callA && callB) {
+        // Both models called the same tool
+        // Check if inputs are identical
+        if (JSON.stringify(callA.input) === JSON.stringify(callB.input)) {
+          // Same tool with same input - use one
+          merged.push({ ...callA, source: "both" })
+        } else {
+          // Same tool with different inputs - conflict
+          conflicts.push({
+            toolName,
+            inputA: callA.input,
+            inputB: callB.input,
+          })
+          // Default to modelA's version in merged
+          merged.push({ ...callA, source: "modelA" })
+        }
+      } else if (callA) {
+        // Only modelA called this tool
+        merged.push({ ...callA, source: "modelA" })
+      } else if (callB) {
+        // Only modelB called this tool
+        merged.push({ ...callB, source: "modelB" })
+      }
+    }
+
+    return { merged, conflicts }
+  })
+}

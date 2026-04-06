@@ -21,6 +21,11 @@ export default [
         worker: {
           format: "es",
         },
+        build: {
+          rollupOptions: {
+            external: ["ghostty-web"],
+          },
+        },
       }
     },
   },

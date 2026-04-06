@@ -161,12 +161,25 @@ export const TuiThreadCommand = cmd({
         process.off("uncaughtException", error)
         process.off("unhandledRejection", error)
         process.off("SIGUSR2", reload)
-        await withTimeout(client.call("shutdown", undefined), 5000).catch((error) => {
-          Log.Default.warn("worker shutdown failed", {
-            error: errorMessage(error),
+
+        // Attempt graceful shutdown with timeout
+        const shutdownSuccess = await withTimeout(client.call("shutdown", undefined), 5000)
+          .then(() => true)
+          .catch((error) => {
+            Log.Default.warn("worker shutdown failed or timed out", {
+              error: errorMessage(error),
+            })
+            return false
           })
-        })
+
+        // Force terminate the worker
         worker.terminate()
+
+        // If graceful shutdown failed, wait a bit and log
+        if (!shutdownSuccess) {
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+          Log.Default.warn("worker forcefully terminated after shutdown timeout")
+        }
       }
 
       const prompt = await input(args.prompt)

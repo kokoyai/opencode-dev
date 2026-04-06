@@ -85,17 +85,86 @@ export namespace ModelsDev {
     return Flag.OPENCODE_MODELS_URL || "https://models.dev"
   }
 
+  let refreshStarted = false
+
+  function startRefreshInterval() {
+    if (refreshStarted) return
+    refreshStarted = true
+    ModelsDev.refresh()
+    setInterval(
+      async () => {
+        await ModelsDev.refresh()
+      },
+      60 * 1000 * 60,
+    ).unref()
+  }
+
   export const Data = lazy(async () => {
+    if (!Flag.OPENCODE_DISABLE_MODELS_FETCH && !process.argv.includes("--get-yargs-completions")) {
+      startRefreshInterval()
+    }
+
+    // Step 1: Try to read from local cache
     const result = await Filesystem.readJson(Flag.OPENCODE_MODELS_PATH ?? filepath).catch(() => {})
-    if (result) return result
+    if (result) {
+      log.debug("loaded models from cache")
+      return result
+    }
+
+    // Step 2: Try bundled snapshot (generated at build time)
     // @ts-ignore
     const snapshot = await import("./models-snapshot.js")
       .then((m) => m.snapshot as Record<string, unknown>)
       .catch(() => undefined)
-    if (snapshot) return snapshot
-    if (Flag.OPENCODE_DISABLE_MODELS_FETCH) return {}
-    const json = await fetch(`${url()}/api.json`).then((x) => x.text())
-    return JSON.parse(json)
+    if (snapshot) {
+      log.debug("loaded models from bundled snapshot")
+      return snapshot
+    }
+
+    // Step 3: Check if fetch is disabled
+    if (Flag.OPENCODE_DISABLE_MODELS_FETCH) {
+      log.info("models fetch disabled, using empty database")
+      return {}
+    }
+
+    // Step 4: Fetch from models.dev with proper error handling
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 3_000)
+
+      const response = await fetch(`${url()}/api.json`, {
+        signal: controller.signal,
+        headers: {
+          "User-Agent": Installation.USER_AGENT,
+        },
+      })
+      clearTimeout(timeout)
+
+      if (!response.ok) {
+        log.warn("models.dev returned non-OK status", {
+          status: response.status,
+          statusText: response.statusText,
+        })
+        return {}
+      }
+
+      const json = await response.text()
+      const data = JSON.parse(json)
+
+      // Cache the result for future use
+      await Filesystem.write(filepath, json).catch((e) => {
+        log.warn("failed to cache models.dev data", { error: String(e) })
+      })
+
+      log.info("loaded models from models.dev")
+      return data
+    } catch (e) {
+      // Network errors, timeout, JSON parse errors, etc.
+      log.warn("failed to fetch models.dev, using empty database", {
+        error: e instanceof Error ? e.message : String(e),
+      })
+      return {}
+    }
   })
 
   export async function get() {
@@ -108,7 +177,7 @@ export namespace ModelsDev {
       headers: {
         "User-Agent": Installation.USER_AGENT,
       },
-      signal: AbortSignal.timeout(10 * 1000),
+      signal: AbortSignal.timeout(3 * 1000),
     }).catch((e) => {
       log.error("Failed to fetch models.dev", {
         error: e,
@@ -119,14 +188,4 @@ export namespace ModelsDev {
       ModelsDev.Data.reset()
     }
   }
-}
-
-if (!Flag.OPENCODE_DISABLE_MODELS_FETCH && !process.argv.includes("--get-yargs-completions")) {
-  ModelsDev.refresh()
-  setInterval(
-    async () => {
-      await ModelsDev.refresh()
-    },
-    60 * 1000 * 60,
-  ).unref()
 }

@@ -13,6 +13,7 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_CHECK from "./prompt/check.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@/global"
@@ -151,6 +152,7 @@ export namespace Agent {
                 defaults,
                 Permission.fromConfig({
                   todowrite: "deny",
+                  task: "deny",
                 }),
                 user,
               ),
@@ -231,6 +233,33 @@ export namespace Agent {
               ),
               prompt: PROMPT_SUMMARY,
             },
+            check: {
+              name: "check",
+              description: `Goal verification agent. Called when agents finish to verify objectives are met. Analyzes user goal and current state, returns CONTINUE if work needed or DONE if goal achieved.`,
+              permission: Permission.merge(
+                defaults,
+                Permission.fromConfig({
+                  "*": "deny",
+                  grep: "allow",
+                  glob: "allow",
+                  list: "allow",
+                  read: "allow",
+                  bash: "allow",
+                  webfetch: "allow",
+                  websearch: "allow",
+                  codesearch: "allow",
+                  external_directory: {
+                    "*": "ask",
+                    ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
+                  },
+                }),
+                user,
+              ),
+              options: {},
+              mode: "subagent",
+              native: true,
+              prompt: PROMPT_CHECK,
+            },
           }
 
           for (const [key, value] of Object.entries(cfg.agent ?? {})) {
@@ -243,7 +272,7 @@ export namespace Agent {
               item = agents[key] = {
                 name: key,
                 mode: "all",
-                permission: Permission.merge(defaults, user),
+                permission: Permission.merge(defaults, Permission.fromConfig({ task: "deny" }), user),
                 options: {},
                 native: false,
               }

@@ -17,6 +17,7 @@ export namespace Pty {
 
   const BUFFER_LIMIT = 1024 * 1024 * 2
   const BUFFER_CHUNK = 64 * 1024
+  const MAX_SESSIONS = 50
   const encoder = new TextEncoder()
 
   type Socket = {
@@ -172,6 +173,20 @@ export namespace Pty {
 
       const create = Effect.fn("Pty.create")(function* (input: CreateInput) {
         const state = yield* InstanceState.get(cache)
+
+        // Enforce session limit
+        if (state.sessions.size >= MAX_SESSIONS) {
+          log.warn("PTY session limit reached, removing oldest session", {
+            limit: MAX_SESSIONS,
+            current: state.sessions.size,
+          })
+          // Remove the oldest session
+          const oldest = state.sessions.keys().next().value
+          if (oldest) {
+            yield* remove(oldest)
+          }
+        }
+
         return yield* Effect.promise(async () => {
           const id = PtyID.ascending()
           const command = input.command || Shell.preferred()

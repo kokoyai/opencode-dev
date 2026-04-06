@@ -6,11 +6,14 @@ import { online } from "@/util/network"
 export namespace PackageRegistry {
   const log = Log.create({ service: "bun" })
 
+  // Default timeout for version checks (quick check during startup)
+  const DEFAULT_TIMEOUT = 3000 // 3 seconds
+
   function which() {
     return process.execPath
   }
 
-  export async function info(pkg: string, field: string, cwd?: string): Promise<string | null> {
+  export async function info(pkg: string, field: string, cwd?: string, timeout?: number): Promise<string | null> {
     if (!online()) {
       log.debug("offline, skipping bun info", { pkg, field })
       return null
@@ -23,10 +26,11 @@ export namespace PackageRegistry {
         BUN_BE_BUN: "1",
       },
       nothrow: true,
+      timeout: timeout ?? DEFAULT_TIMEOUT,
     })
 
     if (code !== 0) {
-      log.warn("bun info failed", { pkg, field, code, stderr: stderr.toString() })
+      log.warn("bun info failed or timed out", { pkg, field, code, stderr: stderr.toString() })
       return null
     }
 

@@ -414,8 +414,9 @@ export namespace File {
         cachedScan = yield* Effect.cached(scan().pipe(Effect.catchCause(() => Effect.void)))
       })
 
+      // Lazy init - don't scan at startup, scan on first use
       const init = Effect.fn("File.init")(function* () {
-        yield* ensure()
+        // Scan will be triggered by first call to ensure()
       })
 
       const status = Effect.fn("File.status")(function* () {

@@ -21,6 +21,9 @@ export namespace SessionStatus {
       z.object({
         type: z.literal("busy"),
       }),
+      z.object({
+        type: z.literal("interrupted"),
+      }),
     ])
     .meta({
       ref: "SessionStatus",
@@ -35,7 +38,6 @@ export namespace SessionStatus {
         status: Info,
       }),
     ),
-    // deprecated
     Idle: BusEvent.define(
       "session.idle",
       z.object({

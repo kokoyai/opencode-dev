@@ -37,15 +37,21 @@ import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 
 process.on("unhandledRejection", (e) => {
-  Log.Default.error("rejection", {
+  Log.Default.error("unhandled rejection", {
     e: errorMessage(e),
+    stack: e instanceof Error ? e.stack : undefined,
   })
+  // Don't exit on unhandled rejection - let the application continue
+  // This prevents crashes from async operations that fail after their context is gone
 })
 
 process.on("uncaughtException", (e) => {
-  Log.Default.error("exception", {
+  Log.Default.error("uncaught exception", {
     e: errorMessage(e),
+    stack: e instanceof Error ? e.stack : undefined,
   })
+  // Don't exit on uncaught exception for non-critical errors
+  // Critical errors will still cause natural failures
 })
 
 const cli = yargs(hideBin(process.argv))

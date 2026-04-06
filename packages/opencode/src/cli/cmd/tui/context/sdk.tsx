@@ -74,20 +74,76 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       sse?.abort()
       const ctrl = new AbortController()
       sse = ctrl
+
+      // Circuit breaker: track consecutive failures
+      let consecutiveFailures = 0
+      const MAX_FAILURES = 3
+      const RETRY_DELAY = 5000 // 5 seconds
+      const CONNECTION_TIMEOUT = 30000 // 30 seconds
+
       ;(async () => {
         while (true) {
           if (abort.signal.aborted || ctrl.signal.aborted) break
-          const events = await sdk.event.subscribe({}, { signal: ctrl.signal })
 
-          for await (const event of events.stream) {
-            if (ctrl.signal.aborted) break
-            handleEvent(event)
+          // Check circuit breaker
+          if (consecutiveFailures >= MAX_FAILURES) {
+            console.error(`SSE connection failed ${MAX_FAILURES} times, pausing for ${RETRY_DELAY}ms`)
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY))
+            consecutiveFailures = 0 // Reset after pause
+            continue
           }
 
-          if (timer) clearTimeout(timer)
-          if (queue.length > 0) flush()
+          try {
+            // Add timeout to subscription
+            const timeoutController = new AbortController()
+            const timeoutId = setTimeout(() => {
+              timeoutController.abort()
+            }, CONNECTION_TIMEOUT)
+
+            const events = await Promise.race([
+              sdk.event.subscribe({}, { signal: ctrl.signal }),
+              new Promise<never>((_, reject) => {
+                timeoutController.signal.addEventListener("abort", () => {
+                  reject(new Error("SSE connection timeout"))
+                })
+              }),
+            ])
+
+            clearTimeout(timeoutId)
+
+            // Reset failure counter on successful connection
+            consecutiveFailures = 0
+
+            for await (const event of events.stream) {
+              if (ctrl.signal.aborted) break
+              handleEvent(event)
+            }
+
+            if (timer) clearTimeout(timer)
+            if (queue.length > 0) flush()
+          } catch (error) {
+            consecutiveFailures++
+            const errorMsg = error instanceof Error ? error.message : String(error)
+
+            // Distinguish between timeout errors and other errors
+            if (errorMsg.includes("timeout") || errorMsg.includes("SSE")) {
+              console.warn("SSE timeout or stream error:", errorMsg, "- reconnecting...")
+            } else {
+              console.error("SSE connection error:", errorMsg)
+            }
+
+            // Exponential backoff for retries
+            const backoffDelay = Math.min(1000 * Math.pow(2, consecutiveFailures - 1), 30000)
+
+            // Wait before reconnecting
+            if (!abort.signal.aborted && !ctrl.signal.aborted) {
+              await new Promise((resolve) => setTimeout(resolve, backoffDelay))
+            }
+          }
         }
-      })().catch(() => {})
+      })().catch((error) => {
+        console.error("SSE loop fatal error:", error instanceof Error ? error.message : error)
+      })
     }
 
     onMount(() => {

@@ -1053,6 +1053,63 @@ export namespace Config {
             .min(0)
             .optional()
             .describe("Token buffer for compaction. Leaves enough window to avoid overflow during compaction."),
+          // 三级压缩阈值配置
+          thresholds: z
+            .object({
+              L1: z
+                .number()
+                .min(0.1)
+                .max(1)
+                .optional()
+                .describe("L1 (light compaction) threshold ratio (default: 0.65 = 65%)"),
+              L2: z
+                .number()
+                .min(0.1)
+                .max(1)
+                .optional()
+                .describe("L2 (medium compaction) threshold ratio (default: 0.75 = 75%)"),
+              L3: z
+                .number()
+                .min(0.1)
+                .max(1)
+                .optional()
+                .describe("L3 (hard truncation) threshold ratio (default: 0.85 = 85%)"),
+            })
+            .optional()
+            .describe("Compaction threshold ratios for each level"),
+          // L1 配置
+          L1: z
+            .object({
+              minTokens: z.number().int().min(1000).optional().describe("Minimum tokens to free (default: 15000)"),
+              protectedTokens: z
+                .number()
+                .int()
+                .min(1000)
+                .optional()
+                .describe("Protected recent tokens (default: 30000)"),
+            })
+            .optional()
+            .describe("L1 light compaction settings"),
+          // L2 配置
+          L2: z
+            .object({
+              maxInputRatio: z
+                .number()
+                .min(0.1)
+                .max(0.9)
+                .optional()
+                .describe("Max ratio for compaction input (default: 0.5)"),
+            })
+            .optional()
+            .describe("L2 medium compaction settings"),
+          // L3 配置
+          L3: z
+            .object({
+              keepRecentTurns: z.number().int().min(1).max(20).optional().describe("Recent turns to keep (default: 3)"),
+              keepFirstMessage: z.boolean().optional().describe("Keep first user message (default: true)"),
+            })
+            .optional()
+            .describe("L3 hard truncation settings"),
         })
         .optional(),
       experimental: z
@@ -1074,8 +1131,55 @@ export namespace Config {
             .positive()
             .optional()
             .describe("Timeout in milliseconds for model context protocol (MCP) requests"),
+          force_continue: z
+            .boolean()
+            .optional()
+            .describe("Force AI to continue when it reports completion but todo items remain"),
+          verify_completion: z
+            .boolean()
+            .optional()
+            .describe("Verify completion by checking if tasks are actually done"),
+          max_continue_attempts: z
+            .number()
+            .int()
+            .min(0)
+            .max(10)
+            .optional()
+            .describe("Maximum number of forced continue attempts (default: 3)"),
+          idle_timeout_minutes: z
+            .number()
+            .int()
+            .min(0)
+            .max(60)
+            .optional()
+            .describe("Minutes to wait before check agent auto-continues when user is idle (default: 2, 0 to disable)"),
+          ensemble: z
+            .object({
+              enabled: z.boolean().optional().describe("Enable ensemble mode with dual model parallel execution"),
+              models: z
+                .array(ModelId)
+                .length(2)
+                .optional()
+                .describe("Two models to use in ensemble mode, e.g. ['anthropic/claude-sonnet-4-5', 'openai/gpt-5']"),
+              judgeModel: ModelId.optional().describe("Model to use for judging/merging ensemble outputs"),
+            })
+            .optional()
+            .describe("Ensemble configuration for dual model parallel execution"),
         })
         .optional(),
+      fallback: z
+        .object({
+          enabled: z.boolean().default(true).describe("Enable model fallback on errors"),
+          models: z
+            .array(ModelId)
+            .describe("Fallback model chain in provider/model format, e.g. ['openai/gpt-5', 'google/gemini-2.5-pro']"),
+          onErrors: z
+            .array(z.enum(["rate_limit", "overloaded", "timeout", "5xx", "context_overflow"]))
+            .default(["rate_limit", "overloaded", "timeout"])
+            .describe("Error types that trigger fallback"),
+        })
+        .optional()
+        .describe("Model fallback configuration for automatic failover"),
     })
     .strict()
     .meta({

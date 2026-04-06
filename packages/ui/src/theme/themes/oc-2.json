@@ -4,8 +4,8 @@
   "id": "oc-2",
   "light": {
     "palette": {
-      "neutral": "#f7f7f7",
-      "ink": "#171311",
+      "neutral": "#ffffff",
+      "ink": "#000000",
       "primary": "#dcde8d",
       "success": "#12c905",
       "warning": "#ffdc17",
@@ -16,10 +16,10 @@
       "diffDelete": "#fc533a"
     },
     "overrides": {
-      "text-strong": "#171717",
-      "text-base": "#6F6F6F",
-      "text-weak": "#8F8F8F",
-      "text-weaker": "#C7C7C7",
+      "text-strong": "#000000",
+      "text-base": "#1a1a1a",
+      "text-weak": "#4a4a4a",
+      "text-weaker": "#8a8a8a",
       "border-weak-base": "#DBDBDB",
       "border-weaker-base": "#E8E8E8",
       "icon-base": "#8F8F8F",

@@ -14,6 +14,7 @@ import { spawn as lspspawn } from "./launch"
 import { Effect, Layer, ServiceMap } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
+import { withTimeout } from "../util/timeout"
 
 export namespace LSP {
   const log = Log.create({ service: "lsp" })
@@ -385,48 +386,52 @@ export namespace LSP {
 
       const hover = Effect.fn("LSP.hover")(function* (input: LocInput) {
         return yield* run(input.file, (client) =>
-          client.connection
-            .sendRequest("textDocument/hover", {
+          withTimeout(
+            client.connection.sendRequest("textDocument/hover", {
               textDocument: { uri: pathToFileURL(input.file).href },
               position: { line: input.line, character: input.character },
-            })
-            .catch(() => null),
+            }),
+            10000, // 10 seconds timeout for hover requests
+          ).catch(() => null),
         )
       })
 
       const definition = Effect.fn("LSP.definition")(function* (input: LocInput) {
         const results = yield* run(input.file, (client) =>
-          client.connection
-            .sendRequest("textDocument/definition", {
+          withTimeout(
+            client.connection.sendRequest("textDocument/definition", {
               textDocument: { uri: pathToFileURL(input.file).href },
               position: { line: input.line, character: input.character },
-            })
-            .catch(() => null),
+            }),
+            10000, // 10 seconds timeout for definition requests
+          ).catch(() => null),
         )
         return results.flat().filter(Boolean)
       })
 
       const references = Effect.fn("LSP.references")(function* (input: LocInput) {
         const results = yield* run(input.file, (client) =>
-          client.connection
-            .sendRequest("textDocument/references", {
+          withTimeout(
+            client.connection.sendRequest("textDocument/references", {
               textDocument: { uri: pathToFileURL(input.file).href },
               position: { line: input.line, character: input.character },
               context: { includeDeclaration: true },
-            })
-            .catch(() => []),
+            }),
+            15000, // 15 seconds timeout for references requests
+          ).catch(() => []),
         )
         return results.flat().filter(Boolean)
       })
 
       const implementation = Effect.fn("LSP.implementation")(function* (input: LocInput) {
         const results = yield* run(input.file, (client) =>
-          client.connection
-            .sendRequest("textDocument/implementation", {
+          withTimeout(
+            client.connection.sendRequest("textDocument/implementation", {
               textDocument: { uri: pathToFileURL(input.file).href },
               position: { line: input.line, character: input.character },
-            })
-            .catch(() => null),
+            }),
+            10000, // 10 seconds timeout for implementation requests
+          ).catch(() => null),
         )
         return results.flat().filter(Boolean)
       })
@@ -434,30 +439,36 @@ export namespace LSP {
       const documentSymbol = Effect.fn("LSP.documentSymbol")(function* (uri: string) {
         const file = fileURLToPath(uri)
         const results = yield* run(file, (client) =>
-          client.connection.sendRequest("textDocument/documentSymbol", { textDocument: { uri } }).catch(() => []),
+          withTimeout(
+            client.connection.sendRequest("textDocument/documentSymbol", { textDocument: { uri } }),
+            15000, // 15 seconds timeout for document symbol requests
+          ).catch(() => []),
         )
         return (results.flat() as (LSP.DocumentSymbol | LSP.Symbol)[]).filter(Boolean)
       })
 
       const workspaceSymbol = Effect.fn("LSP.workspaceSymbol")(function* (query: string) {
         const results = yield* runAll((client) =>
-          client.connection
-            .sendRequest("workspace/symbol", { query })
-            .then((result: any) => result.filter((x: LSP.Symbol) => kinds.includes(x.kind)))
-            .then((result: any) => result.slice(0, 10))
-            .catch(() => []),
+          withTimeout(
+            client.connection
+              .sendRequest("workspace/symbol", { query })
+              .then((result: any) => result.filter((x: LSP.Symbol) => kinds.includes(x.kind)))
+              .then((result: any) => result.slice(0, 10)),
+            15000, // 15 seconds timeout for workspace symbol requests
+          ).catch(() => []),
         )
         return results.flat() as LSP.Symbol[]
       })
 
       const prepareCallHierarchy = Effect.fn("LSP.prepareCallHierarchy")(function* (input: LocInput) {
         const results = yield* run(input.file, (client) =>
-          client.connection
-            .sendRequest("textDocument/prepareCallHierarchy", {
+          withTimeout(
+            client.connection.sendRequest("textDocument/prepareCallHierarchy", {
               textDocument: { uri: pathToFileURL(input.file).href },
               position: { line: input.line, character: input.character },
-            })
-            .catch(() => []),
+            }),
+            10000, // 10 seconds timeout for call hierarchy requests
+          ).catch(() => []),
         )
         return results.flat().filter(Boolean)
       })
@@ -467,14 +478,18 @@ export namespace LSP {
         direction: "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls",
       ) {
         const results = yield* run(input.file, async (client) => {
-          const items = (await client.connection
-            .sendRequest("textDocument/prepareCallHierarchy", {
+          const items = (await withTimeout(
+            client.connection.sendRequest("textDocument/prepareCallHierarchy", {
               textDocument: { uri: pathToFileURL(input.file).href },
               position: { line: input.line, character: input.character },
-            })
-            .catch(() => [])) as any[]
+            }),
+            10000, // 10 seconds timeout
+          ).catch(() => [])) as any[]
           if (!items?.length) return []
-          return client.connection.sendRequest(direction, { item: items[0] }).catch(() => [])
+          return withTimeout(
+            client.connection.sendRequest(direction, { item: items[0] }),
+            10000, // 10 seconds timeout
+          ).catch(() => [])
         })
         return results.flat().filter(Boolean)
       })

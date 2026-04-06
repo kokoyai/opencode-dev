@@ -182,8 +182,24 @@ export namespace LSPServer {
       if (!(await Filesystem.exists(serverPath))) {
         if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
         log.info("downloading and building VS Code ESLint server")
-        const response = await fetch("https://github.com/microsoft/vscode-eslint/archive/refs/heads/main.zip")
-        if (!response.ok) return
+
+        // Add timeout for LSP installation
+        const LSP_DOWNLOAD_TIMEOUT = 300000 // 5 minutes for download
+        const LSP_INSTALL_TIMEOUT = 600000 // 10 minutes for npm install
+
+        const downloadController = new AbortController()
+        const downloadTimeout = setTimeout(() => downloadController.abort(), LSP_DOWNLOAD_TIMEOUT)
+
+        const response = await fetch("https://github.com/microsoft/vscode-eslint/archive/refs/heads/main.zip", {
+          signal: downloadController.signal,
+        }).catch((error) => {
+          clearTimeout(downloadTimeout)
+          log.error("LSP download failed or timed out", { error })
+          return null
+        })
+
+        clearTimeout(downloadTimeout)
+        if (!response || !response.ok) return
 
         const zipPath = path.join(Global.Path.bin, "vscode-eslint.zip")
         if (response.body) await Filesystem.writeStream(zipPath, response.body)
@@ -208,8 +224,25 @@ export namespace LSPServer {
         await fs.rename(extractedPath, finalPath)
 
         const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
-        await Process.run([npmCmd, "install"], { cwd: finalPath })
-        await Process.run([npmCmd, "run", "compile"], { cwd: finalPath })
+
+        // Add timeout to npm install
+        log.info("Running npm install with timeout", { timeout: LSP_INSTALL_TIMEOUT })
+        await Promise.race([
+          Process.run([npmCmd, "install"], { cwd: finalPath }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("npm install timed out")), LSP_INSTALL_TIMEOUT)),
+        ]).catch((error) => {
+          log.error("npm install failed or timed out", { error })
+          return
+        })
+
+        // Add timeout to npm run compile
+        await Promise.race([
+          Process.run([npmCmd, "run", "compile"], { cwd: finalPath }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("npm compile timed out")), LSP_INSTALL_TIMEOUT)),
+        ]).catch((error) => {
+          log.error("npm compile failed or timed out", { error })
+          return
+        })
 
         log.info("installed VS Code ESLint server", { serverPath })
       }

@@ -120,10 +120,11 @@ export namespace Format {
                   .pipe(
                     Effect.flatMap((handle) => handle.exitCode),
                     Effect.scoped,
+                    Effect.timeout("30 seconds"), // Add 30 second timeout for formatting
                     Effect.catch(() =>
                       Effect.sync(() => {
                         log.error("failed to format file", {
-                          error: "spawn failed",
+                          error: "spawn failed or timeout",
                           command: item.command,
                           ...item.environment,
                           file: filepath,

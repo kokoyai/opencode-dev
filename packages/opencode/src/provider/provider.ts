@@ -23,35 +23,23 @@ import { Effect, Layer, ServiceMap } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
 
-// Direct imports for bundled providers
-import { createAmazonBedrock, type AmazonBedrockProviderSettings } from "@ai-sdk/amazon-bedrock"
-import { createAnthropic } from "@ai-sdk/anthropic"
-import { createAzure } from "@ai-sdk/azure"
-import { createGoogleGenerativeAI } from "@ai-sdk/google"
-import { createVertex } from "@ai-sdk/google-vertex"
-import { createVertexAnthropic } from "@ai-sdk/google-vertex/anthropic"
-import { createOpenAI } from "@ai-sdk/openai"
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
-import { createOpenRouter } from "@openrouter/ai-sdk-provider"
+// Dynamic imports for bundled providers - loaded on demand
+const sdkLoaderCache = new Map<string, Promise<any>>()
+
+async function loadSDKFactory(pkg: string) {
+  let cached = sdkLoaderCache.get(pkg)
+  if (!cached) {
+    cached = (async () => {
+      const mod = await import(pkg)
+      return mod[Object.keys(mod).find((k: string) => k.startsWith("create"))!]
+    })()
+    sdkLoaderCache.set(pkg, cached)
+  }
+  return cached
+}
+
+// Local SDK that doesn't need dynamic import
 import { createOpenaiCompatible as createGitHubCopilotOpenAICompatible } from "./sdk/copilot"
-import { createXai } from "@ai-sdk/xai"
-import { createMistral } from "@ai-sdk/mistral"
-import { createGroq } from "@ai-sdk/groq"
-import { createDeepInfra } from "@ai-sdk/deepinfra"
-import { createCerebras } from "@ai-sdk/cerebras"
-import { createCohere } from "@ai-sdk/cohere"
-import { createGateway } from "@ai-sdk/gateway"
-import { createTogetherAI } from "@ai-sdk/togetherai"
-import { createPerplexity } from "@ai-sdk/perplexity"
-import { createVercel } from "@ai-sdk/vercel"
-import {
-  createGitLab,
-  VERSION as GITLAB_PROVIDER_VERSION,
-  isWorkflowModel,
-  discoverWorkflowModels,
-} from "gitlab-ai-provider"
-import { fromNodeProviderChain } from "@aws-sdk/credential-providers"
-import { GoogleAuth } from "google-auth-library"
 import { ProviderTransform } from "./transform"
 import { Installation } from "../installation"
 import { ModelID, ProviderID } from "./schema"
@@ -65,20 +53,34 @@ export namespace Provider {
     return Number(match[1]) >= 5 && !modelID.startsWith("gpt-5-mini")
   }
 
+  /**
+   * Wraps an SSE response with a chunk-level read timeout.
+   * When a read times out, the stream is closed gracefully instead of throwing.
+   */
   function wrapSSE(res: Response, ms: number, ctl: AbortController) {
     if (typeof ms !== "number" || ms <= 0) return res
     if (!res.body) return res
     if (!res.headers.get("content-type")?.includes("text/event-stream")) return res
 
     const reader = res.body.getReader()
+    let timeoutOccurred = false
+
     const body = new ReadableStream<Uint8Array>({
       async pull(ctrl) {
-        const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
+        // If timeout already occurred, close the stream
+        if (timeoutOccurred) {
+          ctrl.close()
+          return
+        }
+
+        const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve) => {
           const id = setTimeout(() => {
-            const err = new Error("SSE read timed out")
-            ctl.abort(err)
-            void reader.cancel(err)
-            reject(err)
+            // Mark timeout occurred and resolve with done=true to close gracefully
+            timeoutOccurred = true
+            log.warn("SSE read timed out, closing stream gracefully", { timeoutMs: ms })
+            ctl.abort(new Error("SSE read timed out"))
+            void reader.cancel().catch(() => {})
+            resolve({ done: true, value: undefined })
           }, ms)
 
           reader.read().then(
@@ -88,7 +90,9 @@ export namespace Provider {
             },
             (err) => {
               clearTimeout(id)
-              reject(err)
+              // On error, resolve with done=true to close gracefully
+              log.debug("SSE read error, closing stream", { error: err })
+              resolve({ done: true, value: undefined })
             },
           )
         })
@@ -101,8 +105,10 @@ export namespace Provider {
         ctrl.enqueue(part.value)
       },
       async cancel(reason) {
-        ctl.abort(reason)
-        await reader.cancel(reason)
+        if (!timeoutOccurred) {
+          ctl.abort(reason)
+        }
+        await reader.cancel(reason).catch(() => {})
       },
     })
 
@@ -117,27 +123,30 @@ export namespace Provider {
     languageModel(modelId: string): LanguageModelV3
   }
 
-  const BUNDLED_PROVIDERS: Record<string, (options: any) => BundledSDK> = {
-    "@ai-sdk/amazon-bedrock": createAmazonBedrock,
-    "@ai-sdk/anthropic": createAnthropic,
-    "@ai-sdk/azure": createAzure,
-    "@ai-sdk/google": createGoogleGenerativeAI,
-    "@ai-sdk/google-vertex": createVertex,
-    "@ai-sdk/google-vertex/anthropic": createVertexAnthropic,
-    "@ai-sdk/openai": createOpenAI,
-    "@ai-sdk/openai-compatible": createOpenAICompatible,
-    "@openrouter/ai-sdk-provider": createOpenRouter,
-    "@ai-sdk/xai": createXai,
-    "@ai-sdk/mistral": createMistral,
-    "@ai-sdk/groq": createGroq,
-    "@ai-sdk/deepinfra": createDeepInfra,
-    "@ai-sdk/cerebras": createCerebras,
-    "@ai-sdk/cohere": createCohere,
-    "@ai-sdk/gateway": createGateway,
-    "@ai-sdk/togetherai": createTogetherAI,
-    "@ai-sdk/perplexity": createPerplexity,
-    "@ai-sdk/vercel": createVercel,
-    "gitlab-ai-provider": createGitLab,
+  const BUNDLED_PROVIDERS: Record<string, string> = {
+    "@ai-sdk/amazon-bedrock": "@ai-sdk/amazon-bedrock",
+    "@ai-sdk/anthropic": "@ai-sdk/anthropic",
+    "@ai-sdk/azure": "@ai-sdk/azure",
+    "@ai-sdk/google": "@ai-sdk/google",
+    "@ai-sdk/google-vertex": "@ai-sdk/google-vertex",
+    "@ai-sdk/google-vertex/anthropic": "@ai-sdk/google-vertex/anthropic",
+    "@ai-sdk/openai": "@ai-sdk/openai",
+    "@ai-sdk/openai-compatible": "@ai-sdk/openai-compatible",
+    "@openrouter/ai-sdk-provider": "@openrouter/ai-sdk-provider",
+    "@ai-sdk/xai": "@ai-sdk/xai",
+    "@ai-sdk/mistral": "@ai-sdk/mistral",
+    "@ai-sdk/groq": "@ai-sdk/groq",
+    "@ai-sdk/deepinfra": "@ai-sdk/deepinfra",
+    "@ai-sdk/cerebras": "@ai-sdk/cerebras",
+    "@ai-sdk/cohere": "@ai-sdk/cohere",
+    "@ai-sdk/gateway": "@ai-sdk/gateway",
+    "@ai-sdk/togetherai": "@ai-sdk/togetherai",
+    "@ai-sdk/perplexity": "@ai-sdk/perplexity",
+    "@ai-sdk/vercel": "@ai-sdk/vercel",
+    "gitlab-ai-provider": "gitlab-ai-provider",
+  }
+
+  const LOCAL_PROVIDERS: Record<string, (options: any) => BundledSDK> = {
     "@ai-sdk/github-copilot": createGitHubCopilotOpenAICompatible,
   }
 
@@ -298,7 +307,7 @@ export namespace Provider {
       if (!profile && !awsAccessKeyId && !awsBearerToken && !awsWebIdentityTokenFile && !containerCreds)
         return { autoload: false }
 
-      const providerOptions: AmazonBedrockProviderSettings = {
+      const providerOptions: Record<string, any> = {
         region: defaultRegion,
       }
 
@@ -307,7 +316,7 @@ export namespace Provider {
       if (!awsBearerToken) {
         // Build credential provider options (only pass profile if specified)
         const credentialProviderOptions = profile ? { profile } : {}
-
+        const { fromNodeProviderChain } = await import("@aws-sdk/credential-providers")
         providerOptions.credentialProvider = fromNodeProviderChain(credentialProviderOptions)
       }
 
@@ -460,6 +469,7 @@ export namespace Provider {
           project,
           location,
           fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+            const { GoogleAuth } = await import("google-auth-library")
             const auth = new GoogleAuth()
             const client = await auth.getApplicationDefault()
             const token = await client.credential.getAccessToken()
@@ -541,8 +551,10 @@ export namespace Provider {
       const config = await Config.get()
       const providerConfig = config.provider?.["gitlab"]
 
+      const gitlabModule = await import("gitlab-ai-provider")
+
       const aiGatewayHeaders = {
-        "User-Agent": `opencode/${Installation.VERSION} gitlab-ai-provider/${GITLAB_PROVIDER_VERSION} (${os.platform()} ${os.release()}; ${os.arch()})`,
+        "User-Agent": `opencode/${Installation.VERSION} gitlab-ai-provider/${gitlabModule.VERSION} (${os.platform()} ${os.release()}; ${os.arch()})`,
         "anthropic-beta": "context-1m-2025-08-07",
         ...(providerConfig?.options?.aiGatewayHeaders || {}),
       }
@@ -561,11 +573,11 @@ export namespace Provider {
           aiGatewayHeaders,
           featureFlags,
         },
-        async getModel(sdk: ReturnType<typeof createGitLab>, modelID: string, options?: Record<string, any>) {
+        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
           if (modelID.startsWith("duo-workflow-")) {
             const workflowRef = options?.workflowRef as string | undefined
             // Use the static mapping if it exists, otherwise use duo-workflow with selectedModelRef
-            const sdkModelID = isWorkflowModel(modelID) ? modelID : "duo-workflow"
+            const sdkModelID = gitlabModule.isWorkflowModel(modelID) ? modelID : "duo-workflow"
             const model = sdk.workflowChat(sdkModelID, {
               featureFlags,
             })
@@ -591,7 +603,7 @@ export namespace Provider {
               auth?.type === "api" ? { "PRIVATE-TOKEN": token } : { Authorization: `Bearer ${token}` }
 
             log.info("gitlab model discovery starting", { instanceUrl })
-            const result = await discoverWorkflowModels(
+            const result = await gitlabModule.discoverWorkflowModels(
               { instanceUrl, getHeaders },
               { workingDirectory: Instance.directory },
             )
@@ -1348,13 +1360,28 @@ export namespace Provider {
             return wrapSSE(res, chunkTimeout, chunkAbortCtl)
           }
 
-          const bundledFn = BUNDLED_PROVIDERS[model.api.npm]
-          if (bundledFn) {
+          const localFn = LOCAL_PROVIDERS[model.api.npm]
+          if (localFn) {
+            log.info("using local provider", {
+              providerID: model.providerID,
+              pkg: model.api.npm,
+            })
+            const loaded = localFn({
+              name: model.providerID,
+              ...options,
+            })
+            s.sdk.set(key, loaded)
+            return loaded as SDK
+          }
+
+          const bundledPkg = BUNDLED_PROVIDERS[model.api.npm]
+          if (bundledPkg) {
             log.info("using bundled provider", {
               providerID: model.providerID,
               pkg: model.api.npm,
             })
-            const loaded = bundledFn({
+            const factory = await loadSDKFactory(bundledPkg)
+            const loaded = factory({
               name: model.providerID,
               ...options,
             })
@@ -1573,7 +1600,7 @@ export namespace Provider {
     return runPromise((svc) => svc.defaultModel())
   }
 
-  const priority = ["gpt-5", "claude-sonnet-4", "big-pickle", "gemini-3-pro"]
+  const priority = ["GLM-5", "gpt-5", "claude-sonnet-4", "big-pickle", "gemini-3-pro"]
   export function sort<T extends { id: string }>(models: T[]) {
     return sortBy(
       models,

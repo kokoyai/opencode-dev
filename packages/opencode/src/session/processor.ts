@@ -16,8 +16,11 @@ import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
-import type { Provider } from "@/provider/provider"
+import { Provider } from "@/provider/provider"
 import { Question } from "@/question"
+
+import * as EnsembleProcessor from "@/ensemble/processor"
+import { getEnsembleConfigEffect } from "@/ensemble/config"
 
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
@@ -70,6 +73,8 @@ export namespace SessionProcessor {
     | Permission.Service
     | Plugin.Service
     | SessionStatus.Service
+    | Provider.Service
+    | EnsembleProcessor.Service
   > = Layer.effect(
     Service,
     Effect.gen(function* () {
@@ -82,6 +87,8 @@ export namespace SessionProcessor {
       const permission = yield* Permission.Service
       const plugin = yield* Plugin.Service
       const status = yield* SessionStatus.Service
+      const provider = yield* Provider.Service
+      const ensemble = yield* EnsembleProcessor.Service
 
       const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
         const ctx: ProcessorContext = {
@@ -443,38 +450,77 @@ export namespace SessionProcessor {
           ctx.needsCompaction = false
           ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
-          return yield* Effect.gen(function* () {
-            yield* Effect.gen(function* () {
-              ctx.currentText = undefined
-              ctx.reasoningMap = {}
-              const stream = llm.stream(streamInput)
+          // Check if ensemble mode is enabled
+          const ensembleConfig = yield* getEnsembleConfigEffect()
 
-              yield* stream.pipe(
-                Stream.tap((event) => handleEvent(event)),
-                Stream.takeUntil(() => ctx.needsCompaction),
-                Stream.runDrain,
+          return yield* Effect.gen(function* () {
+            if (ensembleConfig.enabled) {
+              // Ensemble mode: use dual model parallel processing
+              log.info("Using ensemble mode with dual models", {
+                models: ensembleConfig.models,
+              })
+
+              const result = yield* ensemble.process(streamInput)
+
+              // Handle ensemble result - convert to events
+              if (result.text) {
+                // Create text part for ensemble output
+                yield* handleEvent({ type: "text-start", id: "ensemble-text" })
+                yield* handleEvent({ type: "text-delta", id: "ensemble-text", text: result.text })
+                yield* handleEvent({ type: "text-end", id: "ensemble-text" })
+              }
+
+              // Handle tool calls from ensemble
+              for (const tc of result.toolCalls) {
+                const toolCallId = tc.toolCallId || `ensemble-${Date.now()}-${Math.random().toString(36).slice(2)}`
+                yield* handleEvent({
+                  type: "tool-call",
+                  toolCallId,
+                  toolName: tc.toolName,
+                  input: tc.input,
+                })
+              }
+
+              log.info("Ensemble processing complete", {
+                textLength: result.text.length,
+                toolCallsCount: result.toolCalls.length,
+                confidence: result.confidence,
+                metadata: result.metadata,
+              })
+            } else {
+              // Standard mode: use single model streaming
+              yield* Effect.gen(function* () {
+                ctx.currentText = undefined
+                ctx.reasoningMap = {}
+                const stream = llm.stream(streamInput)
+
+                yield* stream.pipe(
+                  Stream.tap((event) => handleEvent(event)),
+                  Stream.takeUntil(() => ctx.needsCompaction),
+                  Stream.runDrain,
+                )
+              }).pipe(
+                Effect.onInterrupt(() => Effect.sync(() => void (aborted = true))),
+                Effect.catchCauseIf(
+                  (cause) => !Cause.hasInterruptsOnly(cause),
+                  (cause) => Effect.fail(Cause.squash(cause)),
+                ),
+                Effect.retry(
+                  SessionRetry.policy({
+                    parse,
+                    set: (info) =>
+                      status.set(ctx.sessionID, {
+                        type: "retry",
+                        attempt: info.attempt,
+                        message: info.message,
+                        next: info.next,
+                      }),
+                  }),
+                ),
+                Effect.catch(halt),
+                Effect.ensuring(cleanup()),
               )
-            }).pipe(
-              Effect.onInterrupt(() => Effect.sync(() => void (aborted = true))),
-              Effect.catchCauseIf(
-                (cause) => !Cause.hasInterruptsOnly(cause),
-                (cause) => Effect.fail(Cause.squash(cause)),
-              ),
-              Effect.retry(
-                SessionRetry.policy({
-                  parse,
-                  set: (info) =>
-                    status.set(ctx.sessionID, {
-                      type: "retry",
-                      attempt: info.attempt,
-                      message: info.message,
-                      next: info.next,
-                    }),
-                }),
-              ),
-              Effect.catch(halt),
-              Effect.ensuring(cleanup()),
-            )
+            }
 
             if (aborted && !ctx.assistantMessage.error) {
               yield* abort()
@@ -512,7 +558,8 @@ export namespace SessionProcessor {
         Layer.provide(Plugin.defaultLayer),
         Layer.provide(SessionStatus.layer.pipe(Layer.provide(Bus.layer))),
         Layer.provide(Bus.layer),
-        Layer.provide(Config.defaultLayer),
+        Layer.provide(Provider.defaultLayer),
+        Layer.provide(EnsembleProcessor.layer.pipe(Layer.provide(Config.defaultLayer))),
       ),
     ),
   )

@@ -1,0 +1,2 @@
+Startup time after Task 1 (global lazy init): 2.325s (real time)
+Baseline before optimization: ~2.13s

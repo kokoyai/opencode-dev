@@ -62,6 +62,7 @@ import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
+import { RandomMeme } from "../../component/random-meme"
 import { Flag } from "@/flag/flag"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
@@ -129,11 +130,11 @@ export function Session() {
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
   const permissions = createMemo(() => {
-    if (session()?.parentID) return []
+    // 收集当前会话和所有子会话的权限请求
     return children().flatMap((x) => sync.data.permission[x.id] ?? [])
   })
   const questions = createMemo(() => {
-    if (session()?.parentID) return []
+    // 收集当前会话和所有子会话的问题请求
     return children().flatMap((x) => sync.data.question[x.id] ?? [])
   })
 
@@ -1163,7 +1164,7 @@ export function Session() {
                 <SubagentFooter />
               </Show>
               <Prompt
-                visible={!session()?.parentID && permissions().length === 0 && questions().length === 0}
+                visible={permissions().length === 0 && questions().length === 0}
                 ref={(r) => {
                   prompt = r
                   promptRef.set(r)
@@ -1181,6 +1182,7 @@ export function Session() {
             </box>
           </Show>
           <Toast />
+          <RandomMeme />
         </box>
         <Show when={sidebarVisible()}>
           <Switch>
